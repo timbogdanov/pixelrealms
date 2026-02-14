@@ -1,0 +1,428 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Pixel Realms - Battle Arena</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+	font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+	background: #0e0f0d;
+	color: #c8c0a8;
+	min-height: 100vh;
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+}
+
+/* Header */
+.header {
+	text-align: center;
+	padding: 48px 20px 24px;
+}
+.header h1 {
+	font-size: 42px;
+	font-weight: 800;
+	color: #ffda4a;
+	letter-spacing: 3px;
+	text-shadow: 0 0 30px rgba(255, 218, 74, 0.3);
+	margin-bottom: 6px;
+}
+.header .tagline {
+	font-size: 15px;
+	color: #8a8068;
+	letter-spacing: 1px;
+	text-transform: uppercase;
+}
+
+/* Main layout */
+.main {
+	display: grid;
+	grid-template-columns: 1fr 1fr;
+	gap: 20px;
+	max-width: 720px;
+	width: 100%;
+	padding: 0 20px 40px;
+}
+.main .full-width {
+	grid-column: 1 / -1;
+}
+
+/* Card */
+.card {
+	background: rgba(18, 20, 16, 0.85);
+	border: 1px solid #736640;
+	border-radius: 8px;
+	overflow: hidden;
+}
+.card-header {
+	background: rgba(8, 9, 6, 0.9);
+	padding: 10px 16px;
+	border-bottom: 1px solid #736640;
+	font-size: 12px;
+	text-transform: uppercase;
+	letter-spacing: 1.5px;
+	color: #8a8068;
+}
+.card-body {
+	padding: 20px;
+}
+
+/* Play section */
+.play-section .card-body {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 16px;
+}
+.username-input {
+	width: 100%;
+	max-width: 280px;
+	padding: 10px 14px;
+	background: #161814;
+	border: 1px solid #4a4230;
+	border-radius: 6px;
+	color: #e0d8c0;
+	font-size: 15px;
+	outline: none;
+	transition: border-color 0.2s;
+}
+.username-input:focus {
+	border-color: #ffda4a;
+}
+.username-input::placeholder {
+	color: #5a5440;
+}
+.play-btn {
+	width: 100%;
+	max-width: 280px;
+	padding: 14px 32px;
+	background: linear-gradient(180deg, #3a3018, #2a2010);
+	border: 2px solid #ffda4a;
+	border-radius: 8px;
+	color: #ffda4a;
+	font-size: 18px;
+	font-weight: 700;
+	letter-spacing: 2px;
+	cursor: pointer;
+	transition: all 0.2s;
+	text-transform: uppercase;
+	animation: pulse-glow 2s ease-in-out infinite;
+}
+.play-btn:hover {
+	background: linear-gradient(180deg, #4a4020, #3a3018);
+	box-shadow: 0 0 20px rgba(255, 218, 74, 0.3);
+	transform: translateY(-1px);
+}
+.play-btn:active {
+	transform: translateY(0);
+}
+@keyframes pulse-glow {
+	0%, 100% { box-shadow: 0 0 8px rgba(255, 218, 74, 0.15); }
+	50% { box-shadow: 0 0 18px rgba(255, 218, 74, 0.35); }
+}
+.play-error {
+	color: #cc4444;
+	font-size: 13px;
+	min-height: 18px;
+}
+
+/* Server info */
+.info-grid {
+	display: grid;
+	grid-template-columns: 1fr 1fr;
+	gap: 12px;
+}
+.info-item {
+	text-align: center;
+}
+.info-label {
+	font-size: 11px;
+	text-transform: uppercase;
+	letter-spacing: 1px;
+	color: #6a6250;
+	margin-bottom: 4px;
+}
+.info-value {
+	font-size: 22px;
+	font-weight: 700;
+	color: #e0d8c0;
+}
+.info-value.gold {
+	color: #ffda4a;
+}
+.info-value.green {
+	color: #6dce6d;
+}
+
+/* Status bar */
+.status-bar {
+	margin-top: 14px;
+	padding-top: 14px;
+	border-top: 1px solid #2a2820;
+}
+.status-row {
+	display: flex;
+	justify-content: space-between;
+	align-items: center;
+	font-size: 13px;
+}
+.status-dot {
+	width: 8px;
+	height: 8px;
+	border-radius: 50%;
+	display: inline-block;
+	margin-right: 6px;
+}
+.status-dot.online { background: #6dce6d; box-shadow: 0 0 6px #6dce6d; }
+.status-dot.offline { background: #666; }
+
+/* Leaderboard */
+.leaderboard-table {
+	width: 100%;
+	border-collapse: collapse;
+}
+.leaderboard-table th {
+	text-align: left;
+	font-size: 11px;
+	text-transform: uppercase;
+	letter-spacing: 1px;
+	color: #6a6250;
+	padding: 0 0 8px;
+	border-bottom: 1px solid #2a2820;
+}
+.leaderboard-table td {
+	padding: 8px 0;
+	font-size: 14px;
+	border-bottom: 1px solid #1a1a18;
+}
+.leaderboard-table tr:last-child td {
+	border-bottom: none;
+}
+.leaderboard-rank {
+	color: #ffda4a;
+	font-weight: 700;
+	width: 30px;
+}
+.leaderboard-name {
+	color: #e0d8c0;
+}
+.leaderboard-map {
+	color: #8a8068;
+	font-size: 12px;
+}
+.leaderboard-time {
+	color: #6a6250;
+	font-size: 12px;
+	text-align: right;
+}
+.leaderboard-empty {
+	text-align: center;
+	color: #4a4430;
+	padding: 20px;
+	font-size: 13px;
+}
+
+/* Footer */
+.footer {
+	text-align: center;
+	padding: 20px;
+	color: #3a3828;
+	font-size: 12px;
+}
+
+/* Responsive */
+@media (max-width: 600px) {
+	.main {
+		grid-template-columns: 1fr;
+	}
+	.header h1 {
+		font-size: 32px;
+	}
+}
+</style>
+</head>
+<body>
+
+<div class="header">
+	<h1>PIXEL REALMS</h1>
+	<div class="tagline">Medieval Battle Arena</div>
+</div>
+
+<div class="main">
+	<!-- Play Section -->
+	<div class="card play-section full-width">
+		<div class="card-header">Enter the Arena</div>
+		<div class="card-body">
+			<input type="text" id="username" class="username-input"
+				placeholder="Enter your name..." maxlength="20" autocomplete="off" spellcheck="false">
+			<button class="play-btn" onclick="play()">Play</button>
+			<div class="play-error" id="play-error"></div>
+		</div>
+	</div>
+
+	<!-- Server Info -->
+	<div class="card">
+		<div class="card-header">Server</div>
+		<div class="card-body">
+			<div class="info-grid">
+				<div class="info-item">
+					<div class="info-label">In Lobby</div>
+					<div class="info-value green" id="player-count">-</div>
+				</div>
+				<div class="info-item">
+					<div class="info-label">Active Games</div>
+					<div class="info-value" id="active-games">-</div>
+				</div>
+				<div class="info-item">
+					<div class="info-label">Next Map</div>
+					<div class="info-value gold" id="map-name" style="font-size:16px">-</div>
+				</div>
+				<div class="info-item">
+					<div class="info-label">Starting In</div>
+					<div class="info-value" id="countdown">-</div>
+				</div>
+			</div>
+			<div class="status-bar">
+				<div class="status-row">
+					<span><span class="status-dot offline" id="status-dot"></span><span id="status-text">Connecting...</span></span>
+				</div>
+			</div>
+		</div>
+	</div>
+
+	<!-- Leaderboard -->
+	<div class="card">
+		<div class="card-header">Recent Winners</div>
+		<div class="card-body" id="leaderboard-body">
+			<div class="leaderboard-empty">No games played yet</div>
+		</div>
+	</div>
+</div>
+
+<div class="footer">Pixel Realms &middot; pixelrealms.io</div>
+
+<script>
+const POLL_INTERVAL = 2000;
+let serverOnline = false;
+
+// Restore username
+const savedName = localStorage.getItem('pixel_realms_username');
+if (savedName) document.getElementById('username').value = savedName;
+
+// Focus username input, play on Enter
+const usernameInput = document.getElementById('username');
+usernameInput.addEventListener('keydown', function(e) {
+	if (e.key === 'Enter') play();
+});
+
+function play() {
+	const name = usernameInput.value.trim();
+	const errorEl = document.getElementById('play-error');
+	if (!name) {
+		errorEl.textContent = 'Please enter a name';
+		usernameInput.focus();
+		return;
+	}
+	if (name.length < 2) {
+		errorEl.textContent = 'Name must be at least 2 characters';
+		usernameInput.focus();
+		return;
+	}
+	errorEl.textContent = '';
+	localStorage.setItem('pixel_realms_username', name);
+	window.location.href = '/play/';
+}
+
+async function fetchLobby() {
+	try {
+		const res = await fetch('/api/lobby');
+		if (!res.ok) throw new Error('HTTP ' + res.status);
+		const data = await res.json();
+		updateUI(data);
+		setOnline(true);
+	} catch (e) {
+		setOnline(false);
+	}
+}
+
+function setOnline(online) {
+	serverOnline = online;
+	const dot = document.getElementById('status-dot');
+	const text = document.getElementById('status-text');
+	if (online) {
+		dot.className = 'status-dot online';
+		text.textContent = 'Server Online';
+	} else {
+		dot.className = 'status-dot offline';
+		text.textContent = 'Server Offline';
+		document.getElementById('player-count').textContent = '-';
+		document.getElementById('active-games').textContent = '-';
+		document.getElementById('map-name').textContent = '-';
+		document.getElementById('countdown').textContent = '-';
+	}
+}
+
+function updateUI(data) {
+	document.getElementById('player-count').textContent = data.player_count || 0;
+	document.getElementById('active-games').textContent = data.active_games || 0;
+	document.getElementById('map-name').textContent = data.map_name || '-';
+
+	const timer = data.timer;
+	const countdownEl = document.getElementById('countdown');
+	if (timer !== undefined && timer < 60 && (data.player_count || 0) >= 2) {
+		countdownEl.textContent = Math.ceil(timer) + 's';
+		countdownEl.classList.add('gold');
+	} else {
+		countdownEl.textContent = 'Waiting';
+		countdownEl.classList.remove('gold');
+	}
+
+	// Leaderboard
+	const lb = data.leaderboard || [];
+	const body = document.getElementById('leaderboard-body');
+	if (lb.length === 0) {
+		body.innerHTML = '<div class="leaderboard-empty">No games played yet</div>';
+		return;
+	}
+
+	const recent = lb.slice(-10).reverse();
+	let html = '<table class="leaderboard-table"><tr><th></th><th>Player</th><th>Map</th><th style="text-align:right">When</th></tr>';
+	recent.forEach(function(entry, i) {
+		const ago = timeAgo(entry.timestamp);
+		html += '<tr>';
+		html += '<td class="leaderboard-rank">' + (i + 1) + '</td>';
+		html += '<td class="leaderboard-name">' + escapeHtml(entry.name || 'Unknown') + '</td>';
+		html += '<td class="leaderboard-map">' + escapeHtml(entry.map || '') + '</td>';
+		html += '<td class="leaderboard-time">' + ago + '</td>';
+		html += '</tr>';
+	});
+	html += '</table>';
+	body.innerHTML = html;
+}
+
+function timeAgo(timestamp) {
+	if (!timestamp) return '';
+	const now = Date.now() / 1000;
+	const diff = now - timestamp;
+	if (diff < 60) return 'just now';
+	if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
+	if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
+	return Math.floor(diff / 86400) + 'd ago';
+}
+
+function escapeHtml(str) {
+	const div = document.createElement('div');
+	div.textContent = str;
+	return div.innerHTML;
+}
+
+// Start polling
+fetchLobby();
+setInterval(fetchLobby, POLL_INTERVAL);
+</script>
+
+</body>
+</html>

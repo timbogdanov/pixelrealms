@@ -121,6 +121,9 @@ func _ready() -> void:
 	else:
 		_add_wasd_input()
 		_lobby_map_index = Net.lobby_map_index
+		# Web builds: auto-join lobby when connected
+		if OS.has_feature("web"):
+			multiplayer.connected_to_server.connect(_on_web_auto_join)
 
 
 func _start_game_client(seed_val: int, my_index: int) -> void:
@@ -329,6 +332,7 @@ func _start_new_game() -> void:
 	var seed_val: int = randi()
 	game.start(seed_val, Net.lobby_map_index, peers, _map_gen_scene)
 
+	Net.active_game_count = _active_games.size()
 	# Reset lobby timer for next batch
 	_lobby_timer = Config.LOBBY_TIMER
 	print("Started game #%d, %d active games total" % [game_id, _active_games.size()])
@@ -353,6 +357,7 @@ func _cleanup_ended_games() -> void:
 		_game_by_id.erase(game.game_id)
 		game.cleanup()
 		game.queue_free()
+		Net.active_game_count = _active_games.size()
 		print("Cleaned up game #%d, %d active games remain" % [game.game_id, _active_games.size()])
 
 
@@ -1435,6 +1440,38 @@ func _draw_turret_beams() -> void:
 func _draw_lobby() -> void:
 	var vp: Vector2 = _hud_node.get_viewport_rect().size
 
+	# Web builds: simplified waiting screen (HTML lobby handles the full UI)
+	if OS.has_feature("web"):
+		_draw_lobby_web(vp)
+		return
+
+	# Desktop builds: full Godot lobby
+	_draw_lobby_desktop(vp)
+
+
+func _draw_lobby_web(vp: Vector2) -> void:
+	# Dark background
+	_hud_node.draw_rect(Rect2(0, 0, vp.x, vp.y), Color(0.06, 0.07, 0.05))
+
+	var cy: float = vp.y * 0.5
+
+	if Net.my_player_index < 0:
+		_hud_node.draw_string(ThemeDB.fallback_font, Vector2(vp.x * 0.5 - 60.0, cy),
+			"Connecting...", HORIZONTAL_ALIGNMENT_LEFT, -1, 18, Color(0.7, 0.65, 0.5))
+	else:
+		var map_name: String = Config.MAP_NAMES[_lobby_map_index]
+		_hud_node.draw_string(ThemeDB.fallback_font, Vector2(vp.x * 0.5 - 80.0, cy - 20.0),
+			"Waiting for players", HORIZONTAL_ALIGNMENT_LEFT, -1, 18, Color(0.7, 0.65, 0.5))
+		var info_text: String = "%d / 20 players  •  %s" % [_lobby_player_count, map_name]
+		_hud_node.draw_string(ThemeDB.fallback_font, Vector2(vp.x * 0.5 - 90.0, cy + 10.0),
+			info_text, HORIZONTAL_ALIGNMENT_LEFT, -1, 14, Config.UI_TEXT_GOLD)
+		if _lobby_player_count >= Config.MIN_PLAYERS_TO_START:
+			var secs: int = maxi(0, int(ceil(_lobby_timer)))
+			_hud_node.draw_string(ThemeDB.fallback_font, Vector2(vp.x * 0.5 - 50.0, cy + 35.0),
+				"Starting in %ds" % secs, HORIZONTAL_ALIGNMENT_LEFT, -1, 16, Color(0.9, 0.85, 0.4))
+
+
+func _draw_lobby_desktop(vp: Vector2) -> void:
 	# Dark background
 	_hud_node.draw_rect(Rect2(0, 0, vp.x, vp.y), Color(0.06, 0.07, 0.05))
 
@@ -1635,13 +1672,14 @@ func _unhandled_input(event: InputEvent) -> void:
 	if Net.role == Net.Role.SERVER:
 		return
 
-	# Lobby: click to join/leave
+	# Lobby: click to join/leave (desktop only — web auto-joins)
 	if _game_state == GameState.LOBBY:
-		if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
-			if Net.my_player_index < 0:
-				Net.rpc_join_lobby.rpc_id(1)
-			else:
-				Net.rpc_leave_lobby.rpc_id(1)
+		if not OS.has_feature("web"):
+			if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
+				if Net.my_player_index < 0:
+					Net.rpc_join_lobby.rpc_id(1)
+				else:
+					Net.rpc_leave_lobby.rpc_id(1)
 		return
 
 	if not (event is InputEventKey and event.pressed):
@@ -1754,6 +1792,15 @@ func _try_buy_item(item_id: String) -> void:
 # Network signal handlers
 # ===========================================================================
 
+func _on_web_auto_join() -> void:
+	# Web: auto-join lobby and send username from localStorage
+	Net.rpc_join_lobby.rpc_id(1)
+	var username: String = "Player"
+	if OS.has_feature("web"):
+		username = JavaScriptBridge.eval("localStorage.getItem('pixel_realms_username') || 'Player'")
+	Net.rpc_set_username.rpc_id(1, username)
+
+
 func _on_net_game_start(seed_val: int, map_index: int, my_index: int, _total_humans: int) -> void:
 	_lobby_map_index = map_index
 	_start_game_client(seed_val, my_index)
@@ -1780,7 +1827,11 @@ func _on_lobby_updated(player_count: int, timer: float, map_index: int, seed_val
 
 
 func _on_returned_to_lobby() -> void:
-	# Client: clean up game state, return to lobby
+	# Web builds: redirect back to HTML lobby
+	if OS.has_feature("web"):
+		JavaScriptBridge.eval("window.location.href = '/';")
+		return
+	# Desktop: clean up game state, return to lobby
 	_clear_game_entities()
 	_game_state = GameState.LOBBY
 	_game_over = false

@@ -18,6 +18,10 @@ var _next_player_slot: int = 0
 var peer_to_game: Dictionary = {}  # peer_id -> game_id (-1 or absent = in lobby)
 var _next_game_id: int = 0
 
+# Username tracking (server)
+var peer_usernames: Dictionary = {}  # peer_id -> String
+var active_game_count: int = 0  # updated by main.gd
+
 # Client state
 var my_player_index: int = -1
 var server_url: String = ""
@@ -114,6 +118,7 @@ func _on_peer_disconnected(peer_id: int) -> void:
 		peer_to_player.erase(peer_id)
 	# Clean up game assignment (main.gd handles notifying the GameInstance)
 	peer_to_game.erase(peer_id)
+	peer_usernames.erase(peer_id)
 	print("Peer disconnected: %d (total: %d)" % [peer_id, connected_peers.size()])
 	peer_left.emit(peer_id)
 
@@ -150,6 +155,49 @@ func server_broadcast_lobby(timer: float) -> void:
 	for pid in connected_peers:
 		if not peer_to_game.has(pid):
 			rpc_lobby_update.rpc_id(pid, lobby_player_count, timer, lobby_map_index, lobby_seed)
+	_write_lobby_state_json()
+
+
+func _write_lobby_state_json() -> void:
+	var map_name: String = Config.MAP_NAMES[lobby_map_index] if lobby_map_index < Config.MAP_NAMES.size() else "Unknown"
+	var leaderboard: Array = _read_leaderboard()
+	var data: Dictionary = {
+		"player_count": lobby_player_count,
+		"timer": lobby_timer,
+		"map_name": map_name,
+		"active_games": active_game_count,
+		"leaderboard": leaderboard,
+	}
+	var json_str: String = JSON.stringify(data)
+	# Atomic write: write to tmp file then rename
+	var tmp_path: String = "/tmp/lobby_state.json.tmp"
+	var final_path: String = "/tmp/lobby_state.json"
+	var f: FileAccess = FileAccess.open(tmp_path, FileAccess.WRITE)
+	if f != null:
+		f.store_string(json_str)
+		f.close()
+		DirAccess.rename_absolute(tmp_path, final_path)
+
+
+func _read_leaderboard() -> Array:
+	var path: String = "/tmp/leaderboard.json"
+	if not FileAccess.file_exists(path):
+		return []
+	var f: FileAccess = FileAccess.open(path, FileAccess.READ)
+	if f == null:
+		return []
+	var text: String = f.get_as_text()
+	f.close()
+	var parsed: Variant = JSON.parse_string(text)
+	if parsed is Dictionary:
+		var entries: Variant = parsed.get("entries", [])
+		if entries is Array:
+			return entries
+	return []
+
+
+func get_username_for_peer(peer_id: int) -> String:
+	return peer_usernames.get(peer_id, "Player")
 
 
 func _reset_lobby() -> void:
@@ -214,6 +262,18 @@ func client_send_action(action_bytes: PackedByteArray) -> void:
 # ---------------------------------------------------------------------------
 # RPCs: Client → Server
 # ---------------------------------------------------------------------------
+
+@rpc("any_peer", "call_remote", "reliable")
+func rpc_set_username(username: String) -> void:
+	if role != Role.SERVER:
+		return
+	var sender: int = multiplayer.get_remote_sender_id()
+	# Sanitize: strip whitespace, limit length
+	var clean: String = username.strip_edges().left(20)
+	if clean.length() < 1:
+		clean = "Player"
+	peer_usernames[sender] = clean
+
 
 @rpc("any_peer", "call_remote", "reliable")
 func rpc_join_lobby() -> void:

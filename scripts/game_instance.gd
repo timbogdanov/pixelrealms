@@ -600,6 +600,51 @@ func _on_hill_won(player_id: int) -> void:
 	_game_over = true
 	_winner_id = player_id
 	_broadcast_game_event({"type": "game_over", "winner_id": player_id})
+	_write_leaderboard_entry(player_id)
+
+
+func _write_leaderboard_entry(player_id: int) -> void:
+	# Determine winner name
+	var winner_name: String = "Bot"
+	var winner_peer: int = _player_to_peer.get(player_id, -1)
+	if winner_peer > 0:
+		winner_name = Net.get_username_for_peer(winner_peer)
+	var map_name: String = Config.MAP_NAMES[map_index] if map_index < Config.MAP_NAMES.size() else "Unknown"
+
+	var entry: Dictionary = {
+		"name": winner_name,
+		"map": map_name,
+		"timestamp": int(Time.get_unix_time_from_system()),
+		"players": _game_peers.size(),
+	}
+
+	# Read existing leaderboard
+	var path: String = "/tmp/leaderboard.json"
+	var entries: Array = []
+	if FileAccess.file_exists(path):
+		var f: FileAccess = FileAccess.open(path, FileAccess.READ)
+		if f != null:
+			var text: String = f.get_as_text()
+			f.close()
+			var parsed: Variant = JSON.parse_string(text)
+			if parsed is Dictionary:
+				var existing: Variant = parsed.get("entries", [])
+				if existing is Array:
+					entries = existing
+
+	entries.append(entry)
+	# Keep last 50
+	if entries.size() > 50:
+		entries = entries.slice(entries.size() - 50)
+
+	var data: Dictionary = {"entries": entries}
+	var json_str: String = JSON.stringify(data)
+	var tmp_path: String = "/tmp/leaderboard.json.tmp"
+	var f: FileAccess = FileAccess.open(tmp_path, FileAccess.WRITE)
+	if f != null:
+		f.store_string(json_str)
+		f.close()
+		DirAccess.rename_absolute(tmp_path, path)
 
 
 # ===========================================================================
