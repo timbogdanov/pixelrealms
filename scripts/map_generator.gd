@@ -3,6 +3,7 @@ extends Node2D
 ## Procedural map generator for the Pixel Realms battle arena.
 ## Generates an 800x600 pixel terrain map with noise-based coastlines,
 ## elevation-driven terrain, paths between key locations, and mob spawn zones.
+## Country shapes loaded from CountryData (real geographic boundaries).
 
 var terrain: PackedByteArray
 var _width: int
@@ -21,130 +22,11 @@ var mob_spawn_zones: Array = []
 # Hill visual color (golden/yellow stone)
 const HILL_COLOR := Color(0.72, 0.65, 0.28)
 
-# Country shape polygons (normalized 0.0-1.0, clockwise)
-const USA_POLY: Array[Vector2] = [
-	# Pacific NW - Washington
-	Vector2(0.06, 0.08), Vector2(0.05, 0.12), Vector2(0.04, 0.17),
-	# Oregon coast
-	Vector2(0.04, 0.22), Vector2(0.04, 0.28),
-	# California
-	Vector2(0.05, 0.33), Vector2(0.04, 0.38), Vector2(0.05, 0.44),
-	Vector2(0.07, 0.50), Vector2(0.09, 0.54), Vector2(0.10, 0.58),
-	# Mexico border (straight east)
-	Vector2(0.16, 0.60), Vector2(0.22, 0.60), Vector2(0.28, 0.60),
-	# Texas - Rio Grande
-	Vector2(0.32, 0.58), Vector2(0.33, 0.64), Vector2(0.35, 0.70),
-	Vector2(0.37, 0.74), Vector2(0.39, 0.70), Vector2(0.41, 0.74),
-	# Gulf coast
-	Vector2(0.45, 0.74), Vector2(0.48, 0.78), Vector2(0.51, 0.75),
-	Vector2(0.55, 0.74),
-	# Florida
-	Vector2(0.59, 0.72), Vector2(0.62, 0.70), Vector2(0.64, 0.74),
-	Vector2(0.65, 0.80), Vector2(0.66, 0.86), Vector2(0.68, 0.90),
-	Vector2(0.71, 0.86), Vector2(0.73, 0.80), Vector2(0.73, 0.74),
-	Vector2(0.71, 0.70),
-	# East coast
-	Vector2(0.74, 0.64), Vector2(0.78, 0.58), Vector2(0.81, 0.52),
-	Vector2(0.83, 0.46), Vector2(0.85, 0.42),
-	# Chesapeake indent
-	Vector2(0.83, 0.40), Vector2(0.85, 0.38),
-	# NJ / NYC / New England
-	Vector2(0.87, 0.34), Vector2(0.89, 0.30), Vector2(0.91, 0.26),
-	# Cape Cod
-	Vector2(0.93, 0.22), Vector2(0.91, 0.20),
-	# Maine
-	Vector2(0.93, 0.16), Vector2(0.93, 0.12),
-	# Northern border (east to west)
-	Vector2(0.88, 0.10), Vector2(0.80, 0.08), Vector2(0.72, 0.08),
-	# Great Lakes indents
-	Vector2(0.66, 0.10), Vector2(0.60, 0.08), Vector2(0.54, 0.10),
-	Vector2(0.50, 0.08),
-	# Lake Michigan dip south
-	Vector2(0.48, 0.16), Vector2(0.46, 0.08),
-	# Lake Superior / Minnesota
-	Vector2(0.42, 0.10), Vector2(0.38, 0.08),
-	# Straight border west
-	Vector2(0.32, 0.08), Vector2(0.24, 0.08), Vector2(0.16, 0.08),
-	Vector2(0.10, 0.08),
-]
+# Multi-polygon country data (set per generate() call)
+var _active_polygons: Array = []
+var _polygon_aabbs: Array = []  # Rect2 per ring for fast rejection
+var _center: Vector2 = Vector2.ZERO  # country centroid in pixel coords
 
-const CANADA_POLY: Array[Vector2] = [
-	# BC Pacific coast (south to north)
-	Vector2(0.06, 0.90), Vector2(0.04, 0.82), Vector2(0.03, 0.74),
-	Vector2(0.05, 0.66), Vector2(0.04, 0.56),
-	# Yukon / NWT Arctic coast (west to east)
-	Vector2(0.08, 0.44), Vector2(0.14, 0.32), Vector2(0.22, 0.22),
-	Vector2(0.30, 0.14), Vector2(0.38, 0.08), Vector2(0.44, 0.05),
-	# West of Hudson Bay - turn south
-	Vector2(0.48, 0.10), Vector2(0.48, 0.18), Vector2(0.46, 0.28),
-	# West coast of Hudson Bay (going south)
-	Vector2(0.44, 0.38), Vector2(0.44, 0.48),
-	# James Bay (bottom of Hudson Bay)
-	Vector2(0.46, 0.56), Vector2(0.48, 0.62), Vector2(0.50, 0.66),
-	Vector2(0.52, 0.62),
-	# East coast of Hudson Bay (going north)
-	Vector2(0.54, 0.54), Vector2(0.56, 0.44), Vector2(0.58, 0.34),
-	Vector2(0.60, 0.26),
-	# Hudson Strait / Baffin
-	Vector2(0.58, 0.18), Vector2(0.60, 0.12), Vector2(0.64, 0.08),
-	Vector2(0.70, 0.06), Vector2(0.74, 0.10), Vector2(0.72, 0.18),
-	# Labrador coast (going south)
-	Vector2(0.76, 0.24), Vector2(0.82, 0.30), Vector2(0.88, 0.36),
-	# Newfoundland
-	Vector2(0.92, 0.42), Vector2(0.94, 0.48), Vector2(0.90, 0.54),
-	# Maritimes
-	Vector2(0.86, 0.58), Vector2(0.84, 0.64), Vector2(0.82, 0.68),
-	Vector2(0.80, 0.66), Vector2(0.78, 0.70),
-	# Southern border (east to west)
-	Vector2(0.74, 0.76), Vector2(0.68, 0.80), Vector2(0.62, 0.84),
-	Vector2(0.56, 0.82), Vector2(0.50, 0.86), Vector2(0.44, 0.88),
-	Vector2(0.36, 0.90), Vector2(0.28, 0.90), Vector2(0.20, 0.90),
-	Vector2(0.12, 0.90),
-]
-
-const EUROPE_POLY: Array[Vector2] = [
-	# Scandinavia - North Cape, going east
-	Vector2(0.40, 0.04), Vector2(0.46, 0.06), Vector2(0.52, 0.08),
-	# Finland / Baltic approach
-	Vector2(0.56, 0.12), Vector2(0.60, 0.16),
-	# Baltic States indent
-	Vector2(0.56, 0.20), Vector2(0.58, 0.24),
-	# Eastern border (going south)
-	Vector2(0.64, 0.22), Vector2(0.70, 0.26), Vector2(0.76, 0.32),
-	Vector2(0.80, 0.38),
-	# Black Sea coast
-	Vector2(0.82, 0.44), Vector2(0.78, 0.48),
-	# Greece / Balkans
-	Vector2(0.74, 0.52), Vector2(0.72, 0.58), Vector2(0.74, 0.64),
-	Vector2(0.72, 0.70), Vector2(0.70, 0.76),
-	# Greek peninsula tip
-	Vector2(0.68, 0.72), Vector2(0.66, 0.66),
-	# Adriatic / Albania
-	Vector2(0.64, 0.60), Vector2(0.60, 0.56),
-	# Italian boot
-	Vector2(0.58, 0.62), Vector2(0.56, 0.70), Vector2(0.54, 0.78),
-	Vector2(0.52, 0.74), Vector2(0.50, 0.68), Vector2(0.48, 0.62),
-	Vector2(0.46, 0.56),
-	# French Riviera / Spain Mediterranean
-	Vector2(0.42, 0.52), Vector2(0.38, 0.56), Vector2(0.34, 0.60),
-	# Iberian peninsula - south
-	Vector2(0.30, 0.66), Vector2(0.26, 0.72), Vector2(0.22, 0.76),
-	# Gibraltar / Portugal
-	Vector2(0.18, 0.72), Vector2(0.14, 0.66), Vector2(0.12, 0.58),
-	Vector2(0.10, 0.50), Vector2(0.12, 0.44),
-	# Galicia / Bay of Biscay
-	Vector2(0.16, 0.40), Vector2(0.18, 0.36),
-	# Brittany
-	Vector2(0.20, 0.32), Vector2(0.18, 0.28), Vector2(0.20, 0.24),
-	# Low Countries / North Sea
-	Vector2(0.24, 0.20), Vector2(0.28, 0.16), Vector2(0.32, 0.14),
-	# Denmark
-	Vector2(0.36, 0.12), Vector2(0.34, 0.08),
-	# Norway west coast (going north)
-	Vector2(0.36, 0.06), Vector2(0.38, 0.08), Vector2(0.38, 0.04),
-]
-
-const MAP_POLYS: Array[Array] = [USA_POLY, CANADA_POLY, EUROPE_POLY]
 
 func _ready() -> void:
 	_width = Config.MAP_WIDTH
@@ -161,6 +43,25 @@ func _ready() -> void:
 	_sprite.centered = false
 
 
+# ---------------------------------------------------------------------------
+# Multi-polygon support
+# ---------------------------------------------------------------------------
+
+func _precompute_aabbs() -> void:
+	_polygon_aabbs.clear()
+	for polygon: Array in _active_polygons:
+		var min_x: float = 1.0
+		var max_x: float = 0.0
+		var min_y: float = 1.0
+		var max_y: float = 0.0
+		for v: Vector2 in polygon:
+			min_x = minf(min_x, v.x)
+			max_x = maxf(max_x, v.x)
+			min_y = minf(min_y, v.y)
+			max_y = maxf(max_y, v.y)
+		_polygon_aabbs.append(Rect2(min_x, min_y, max_x - min_x, max_y - min_y))
+
+
 func _point_in_polygon(point: Vector2, polygon: Array) -> bool:
 	var inside: bool = false
 	var j: int = polygon.size() - 1
@@ -175,9 +76,51 @@ func _point_in_polygon(point: Vector2, polygon: Array) -> bool:
 	return inside
 
 
+func _point_in_country(norm_pos: Vector2) -> bool:
+	for i in _active_polygons.size():
+		var aabb: Rect2 = _polygon_aabbs[i]
+		if not aabb.has_point(norm_pos):
+			continue
+		if _point_in_polygon(norm_pos, _active_polygons[i]):
+			return true
+	return false
+
+
+func _find_land_radius(center: Vector2, angle: float) -> float:
+	## Ray-march from center outward at the given angle.
+	## Returns the distance (in pixels) to the last land pixel found.
+	var max_dist: float = 0.0
+	for step in 500:
+		var pos: Vector2 = center + Vector2(cos(angle), sin(angle)) * float(step)
+		var px: int = int(pos.x)
+		var py: int = int(pos.y)
+		if px < 0 or px >= _width or py < 0 or py >= _height:
+			break
+		var norm: Vector2 = Vector2(float(px) / float(_width), float(py) / float(_height))
+		if _point_in_country(norm):
+			max_dist = float(step)
+		elif max_dist > 0.0:
+			break  # We left the land
+	return max_dist
+
+
+# ---------------------------------------------------------------------------
+# Main generation
+# ---------------------------------------------------------------------------
+
 func generate(seed_val: int = 42, map_index: int = 0) -> void:
 	var rng := RandomNumberGenerator.new()
 	rng.seed = seed_val
+
+	# --- Load country polygon data ---
+	var country_id: String = CountryData.MAP_IDS[clampi(map_index, 0, CountryData.MAP_IDS.size() - 1)]
+	var country_info: Dictionary = CountryData.COUNTRIES[country_id]
+	_active_polygons = country_info["polygons"]
+	_precompute_aabbs()
+	var centroid: Vector2 = country_info["centroid"]
+	var center_x: float = centroid.x * float(_width)
+	var center_y: float = centroid.y * float(_height)
+	_center = Vector2(center_x, center_y)
 
 	# --- Noise layers ---
 
@@ -217,12 +160,7 @@ func generate(seed_val: int = 42, map_index: int = 0) -> void:
 	lake_noise.frequency = 0.015
 	lake_noise.fractal_octaves = 2
 
-	var center_x: float = _width * 0.5
-	var center_y: float = _height * 0.5
 	var hill_radius: float = Config.HILL_RADIUS
-
-	# Select country polygon
-	var active_poly: Array = MAP_POLYS[clampi(map_index, 0, MAP_POLYS.size() - 1)]
 
 	# --- Pass 1: Generate base terrain using country shape ---
 	for y in _height:
@@ -241,7 +179,7 @@ func generate(seed_val: int = 42, map_index: int = 0) -> void:
 			# Country shape check with noise wobble for organic coastline
 			var wobble: float = continent_noise.get_noise_2d(x, y) * 0.02
 			var norm_pos := Vector2(float(x) / float(_width) + wobble, float(y) / float(_height) + wobble)
-			var is_land: bool = _point_in_polygon(norm_pos, active_poly)
+			var is_land: bool = _point_in_country(norm_pos)
 
 			if not is_land:
 				terrain[idx] = Config.Terrain.WATER
@@ -269,7 +207,7 @@ func generate(seed_val: int = 42, map_index: int = 0) -> void:
 			var variation: float = color_noise.get_noise_2d(x * 3.0, y * 3.0) * 0.04
 
 			# Hill zone: forced HILL terrain near center
-			var dist_to_center: float = Vector2(x, y).distance_to(Vector2(center_x, center_y))
+			var dist_to_center: float = Vector2(x, y).distance_to(_center)
 			if dist_to_center <= hill_radius:
 				terrain[idx] = Config.Terrain.HILL
 				var center_blend: float = 1.0 - (dist_to_center / hill_radius)
@@ -297,7 +235,7 @@ func generate(seed_val: int = 42, map_index: int = 0) -> void:
 	_generate_rivers(rng)
 
 	# --- Place key locations ---
-	hill_position = Vector2(center_x, center_y)
+	hill_position = _find_walkable_near(_center, 30)
 	_place_shops(rng)
 	_place_spawns(rng)
 
@@ -339,18 +277,18 @@ func get_speed_mult(pos: Vector2i) -> float:
 
 
 # ---------------------------------------------------------------------------
-#  Shop placement: 3 shops at 120-degree intervals, ~60% from center to edge
+#  Shop placement: 3 shops at 120-degree intervals, using land-aware radius
 # ---------------------------------------------------------------------------
 func _place_shops(rng: RandomNumberGenerator) -> void:
 	shop_positions.clear()
-	var center: Vector2 = Vector2(_width * 0.5, _height * 0.5)
 	var base_angle: float = rng.randf_range(0.0, TAU / 3.0)
 
 	for i in 3:
 		var angle: float = base_angle + (TAU / 3.0) * float(i)
-		var target_dist: float = minf(_width, _height) * 0.5 * 0.6
-		var target: Vector2 = center + Vector2(cos(angle), sin(angle)) * target_dist
-		var snapped: Vector2 = _find_walkable_near(target, 40)
+		var land_dist: float = _find_land_radius(_center, angle)
+		var target_dist: float = maxf(land_dist * 0.6, 30.0)
+		var target: Vector2 = _center + Vector2(cos(angle), sin(angle)) * target_dist
+		var snapped: Vector2 = _find_walkable_near(target, 80)
 		shop_positions.append(snapped)
 
 
@@ -359,32 +297,32 @@ func _place_shops(rng: RandomNumberGenerator) -> void:
 # ---------------------------------------------------------------------------
 func _place_spawns(rng: RandomNumberGenerator) -> void:
 	spawn_positions.clear()
-	var center: Vector2 = Vector2(_width * 0.5, _height * 0.5)
 	var base_angle: float = rng.randf_range(0.0, TAU / float(Config.NUM_PLAYERS))
 
 	for i in Config.NUM_PLAYERS:
 		var angle: float = base_angle + (TAU / float(Config.NUM_PLAYERS)) * float(i)
 		angle += rng.randf_range(-0.05, 0.05)
-		var target_dist: float = minf(_width, _height) * 0.5 * 0.75
-		var target: Vector2 = center + Vector2(cos(angle), sin(angle)) * target_dist
-		var snapped: Vector2 = _find_walkable_near(target, 50)
+		var land_dist: float = _find_land_radius(_center, angle)
+		var target_dist: float = maxf(land_dist * 0.75, 30.0)
+		var target: Vector2 = _center + Vector2(cos(angle), sin(angle)) * target_dist
+		var snapped: Vector2 = _find_walkable_near(target, 80)
 		spawn_positions.append(snapped)
 
 
 # ---------------------------------------------------------------------------
-#  Mob spawn zone placement
+#  Mob spawn zone placement using land-aware radius
 # ---------------------------------------------------------------------------
 func _place_mob_spawn_zones(rng: RandomNumberGenerator) -> void:
 	mob_spawn_zones.clear()
-	var center: Vector2 = Vector2(_width * 0.5, _height * 0.5)
-	var max_dist: float = minf(_width, _height) * 0.5
 
 	# 8 slime zones in outer ring (80-95% from center)
 	for i in 8:
 		var angle: float = (TAU / 8.0) * float(i) + rng.randf_range(-0.2, 0.2)
+		var land_dist: float = _find_land_radius(_center, angle)
 		var dist_frac: float = rng.randf_range(0.80, 0.95)
-		var target: Vector2 = center + Vector2(cos(angle), sin(angle)) * max_dist * dist_frac
-		var pos: Vector2 = _find_walkable_near(target, 30)
+		var target_dist: float = maxf(land_dist * dist_frac, 30.0)
+		var target: Vector2 = _center + Vector2(cos(angle), sin(angle)) * target_dist
+		var pos: Vector2 = _find_walkable_near(target, 60)
 		mob_spawn_zones.append({
 			"pos": pos,
 			"type": Config.MobType.SLIME,
@@ -394,9 +332,11 @@ func _place_mob_spawn_zones(rng: RandomNumberGenerator) -> void:
 	# 4 skeleton zones in middle ring (45-65% from center)
 	for i in 4:
 		var angle: float = (TAU / 4.0) * float(i) + rng.randf_range(-0.3, 0.3)
+		var land_dist: float = _find_land_radius(_center, angle)
 		var dist_frac: float = rng.randf_range(0.45, 0.65)
-		var target: Vector2 = center + Vector2(cos(angle), sin(angle)) * max_dist * dist_frac
-		var pos: Vector2 = _find_walkable_near(target, 30)
+		var target_dist: float = maxf(land_dist * dist_frac, 30.0)
+		var target: Vector2 = _center + Vector2(cos(angle), sin(angle)) * target_dist
+		var pos: Vector2 = _find_walkable_near(target, 60)
 		mob_spawn_zones.append({
 			"pos": pos,
 			"type": Config.MobType.SKELETON,
@@ -406,12 +346,14 @@ func _place_mob_spawn_zones(rng: RandomNumberGenerator) -> void:
 	# 2 knight zones near center (20-35% from center, but not on Hill)
 	for i in 2:
 		var angle: float = (TAU / 2.0) * float(i) + rng.randf_range(-0.4, 0.4)
+		var land_dist: float = _find_land_radius(_center, angle)
 		var dist_frac: float = rng.randf_range(0.20, 0.35)
-		var target: Vector2 = center + Vector2(cos(angle), sin(angle)) * max_dist * dist_frac
+		var target_dist: float = maxf(land_dist * dist_frac, 30.0)
+		var target: Vector2 = _center + Vector2(cos(angle), sin(angle)) * target_dist
 		# Ensure not overlapping with Hill
-		if target.distance_to(center) < Config.HILL_RADIUS + 10.0:
-			target = center + Vector2(cos(angle), sin(angle)) * (Config.HILL_RADIUS + 15.0)
-		var pos: Vector2 = _find_walkable_near(target, 30)
+		if target.distance_to(_center) < Config.HILL_RADIUS + 10.0:
+			target = _center + Vector2(cos(angle), sin(angle)) * (Config.HILL_RADIUS + 15.0)
+		var pos: Vector2 = _find_walkable_near(target, 60)
 		mob_spawn_zones.append({
 			"pos": pos,
 			"type": Config.MobType.KNIGHT,
@@ -423,9 +365,6 @@ func _place_mob_spawn_zones(rng: RandomNumberGenerator) -> void:
 #  River generation: 3 rivers flowing from inland hills toward the coast
 # ---------------------------------------------------------------------------
 func _generate_rivers(rng: RandomNumberGenerator) -> void:
-	var center_x: float = _width * 0.5
-	var center_y: float = _height * 0.5
-	var map_radius: float = minf(_width, _height) * 0.5
 	var hill_radius: float = Config.HILL_RADIUS
 	var base_angle: float = rng.randf_range(0.0, TAU / 3.0)
 
@@ -433,10 +372,11 @@ func _generate_rivers(rng: RandomNumberGenerator) -> void:
 		# Pick a starting angle ~120 degrees apart with some randomness
 		var angle: float = base_angle + (TAU / 3.0) * float(i) + rng.randf_range(-0.3, 0.3)
 
-		# Start point: center offset by ~35% of map radius (inland hills area)
-		var start_dist: float = map_radius * 0.35
-		var start_x: float = center_x + cos(angle) * start_dist
-		var start_y: float = center_y + sin(angle) * start_dist
+		# Use land-aware radius for river start point
+		var land_dist: float = _find_land_radius(_center, angle)
+		var start_dist: float = land_dist * 0.35
+		var start_x: float = _center.x + cos(angle) * start_dist
+		var start_y: float = _center.y + sin(angle) * start_dist
 
 		# Walk direction: roughly toward nearest edge (same angle as offset)
 		var walk_angle: float = angle
@@ -480,7 +420,7 @@ func _generate_rivers(rng: RandomNumberGenerator) -> void:
 					continue
 
 				# Don't carve through the central hill zone
-				var dist_to_center: float = Vector2(fx, fy).distance_to(Vector2(center_x, center_y))
+				var dist_to_center: float = Vector2(fx, fy).distance_to(_center)
 				if dist_to_center <= hill_radius + 5.0:
 					continue
 
