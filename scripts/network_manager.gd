@@ -22,12 +22,13 @@ var server_url: String = ""
 var lobby_player_count: int = 0
 var lobby_timer: float = 60.0
 var lobby_map_index: int = 0
+var lobby_seed: int = 0
 var lobby_started: bool = false
 
 # Signals for main.gd
 signal peer_joined(peer_id: int)
 signal peer_left(peer_id: int)
-signal lobby_updated(player_count: int, timer: float, map_index: int)
+signal lobby_updated(player_count: int, timer: float, map_index: int, seed_val: int)
 signal game_starting(seed_val: int, map_index: int, my_index: int, total_humans: int)
 signal state_snapshot_received(snapshot: PackedByteArray)
 signal input_received(peer_id: int, input_data: PackedByteArray)
@@ -60,6 +61,7 @@ func _start_server() -> void:
 	multiplayer.peer_connected.connect(_on_peer_connected)
 	multiplayer.peer_disconnected.connect(_on_peer_disconnected)
 	lobby_map_index = randi() % Config.MAP_NAMES.size()
+	lobby_seed = randi()
 	print("Server started on port %d, map: %s" % [Config.SERVER_PORT, Config.MAP_NAMES[lobby_map_index]])
 
 
@@ -115,7 +117,6 @@ func _on_peer_disconnected(peer_id: int) -> void:
 
 func _on_connected_to_server() -> void:
 	print("Connected to server!")
-	rpc_join_lobby.rpc_id(1)
 
 
 func _on_server_disconnected() -> void:
@@ -137,9 +138,9 @@ func server_assign_player(peer_id: int) -> int:
 
 func server_broadcast_lobby(timer: float) -> void:
 	lobby_timer = timer
-	lobby_player_count = connected_peers.size()
+	lobby_player_count = peer_to_player.size()
 	for pid in connected_peers:
-		rpc_lobby_update.rpc_id(pid, lobby_player_count, timer, lobby_map_index)
+		rpc_lobby_update.rpc_id(pid, lobby_player_count, timer, lobby_map_index, lobby_seed)
 
 
 func server_start_game(seed_val: int) -> void:
@@ -204,6 +205,20 @@ func rpc_join_lobby() -> void:
 	print("Player %d assigned slot %d" % [sender, slot])
 
 
+@rpc("any_peer", "call_remote", "reliable")
+func rpc_leave_lobby() -> void:
+	if role != Role.SERVER:
+		return
+	var sender: int = multiplayer.get_remote_sender_id()
+	if not peer_to_player.has(sender):
+		return
+	var slot: int = peer_to_player[sender]
+	peer_to_player.erase(sender)
+	player_to_peer.erase(slot)
+	rpc_unassign_player.rpc_id(sender)
+	print("Player %d left lobby (slot %d)" % [sender, slot])
+
+
 @rpc("any_peer", "call_remote", "unreliable")
 func rpc_player_input(input_bytes: PackedByteArray) -> void:
 	if role != Role.SERVER:
@@ -233,13 +248,22 @@ func rpc_assign_player(player_index: int) -> void:
 
 
 @rpc("authority", "call_remote", "reliable")
-func rpc_lobby_update(player_count: int, timer: float, map_index: int) -> void:
+func rpc_lobby_update(player_count: int, timer: float, map_index: int, seed_val: int) -> void:
 	if role != Role.CLIENT:
 		return
 	lobby_player_count = player_count
 	lobby_timer = timer
 	lobby_map_index = map_index
-	lobby_updated.emit(player_count, timer, map_index)
+	lobby_seed = seed_val
+	lobby_updated.emit(player_count, timer, map_index, seed_val)
+
+
+@rpc("authority", "call_remote", "reliable")
+func rpc_unassign_player() -> void:
+	if role != Role.CLIENT:
+		return
+	my_player_index = -1
+	print("Unassigned from lobby")
 
 
 @rpc("authority", "call_remote", "reliable")

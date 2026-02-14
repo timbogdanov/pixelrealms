@@ -66,6 +66,10 @@ var _pending_actions: Array = []
 var _snapshot_timer: float = 0.0
 var _lobby_broadcast_timer: float = 0.0
 
+# Client interpolation targets
+var _player_targets: Dictionary = {}  # player_id -> Vector2
+var _mob_targets: Dictionary = {}     # mob_id -> Vector2
+
 # ---------------------------------------------------------------------------
 # Game state
 # ---------------------------------------------------------------------------
@@ -80,9 +84,10 @@ var _game_time: float = 0.0
 # ---------------------------------------------------------------------------
 var _lobby_timer: float = 60.0
 var _lobby_player_count: int = 0
-var _lobby_joined: bool = false
 var _lobby_fill_timer: float = 0.0
 var _lobby_map_index: int = 0
+var _lobby_seed: int = 0
+var _lobby_preview_tex: ImageTexture = null
 
 
 # ===========================================================================
@@ -325,8 +330,12 @@ func _process(delta: float) -> void:
 		_hud_node.queue_redraw()
 		return
 
-	# Send input to server
+	# Send input to server + local prediction for human
 	_send_input_to_server()
+	_predict_human_movement(delta)
+
+	# Interpolate all entities toward snapshot targets
+	_interpolate_entities(delta)
 
 	# Tick visual timers
 	_tick_messages(delta)
@@ -359,11 +368,11 @@ func _process_lobby_server(delta: float) -> void:
 	_lobby_broadcast_timer -= delta
 	if _lobby_broadcast_timer <= 0.0:
 		_lobby_broadcast_timer = 0.5
-		_lobby_player_count = Net.connected_peers.size()
+		_lobby_player_count = Net.peer_to_player.size()
 		Net.server_broadcast_lobby(_lobby_timer)
 
-	# Timer only counts down after min players connected
-	if Net.connected_peers.size() < Config.MIN_PLAYERS_TO_START:
+	# Timer only counts down after min players joined
+	if Net.peer_to_player.size() < Config.MIN_PLAYERS_TO_START:
 		_lobby_timer = Config.LOBBY_TIMER
 		return
 
@@ -1823,9 +1832,9 @@ func _draw_lobby() -> void:
 	_hud_node.draw_string(ThemeDB.fallback_font, Vector2(vp.x * 0.5 - 65.0, vp.y * 0.18 + 18.0),
 		"Battle Arena", HORIZONTAL_ALIGNMENT_LEFT, -1, 14, Color(0.7, 0.65, 0.5))
 
-	# Server card
+	# Server card (taller to fit map preview)
 	var card_w: float = 280.0
-	var card_h: float = 180.0
+	var card_h: float = 310.0
 	var card_x: float = vp.x * 0.5 - card_w * 0.5
 	var card_y: float = vp.y * 0.5 - card_h * 0.5
 
@@ -1846,14 +1855,25 @@ func _draw_lobby() -> void:
 	var dot_col: Color = Color(0.3, 0.9, 0.3) if Net.my_player_index >= 0 else Color(0.6, 0.6, 0.4)
 	_hud_node.draw_rect(Rect2(card_x + card_w - 18.0, card_y + 10.0, 8.0, 8.0), dot_col)
 
-	# Player count
+	# Map preview
+	var preview_y: float = card_y + 34.0
+	if _lobby_preview_tex != null:
+		_hud_node.draw_texture_rect(_lobby_preview_tex, Rect2(card_x + 12.0, preview_y, 256.0, 150.0), false)
+		_hud_node.draw_rect(Rect2(card_x + 12.0, preview_y, 256.0, 150.0), Config.UI_BORDER, false, 1.0)
+	else:
+		_hud_node.draw_rect(Rect2(card_x + 12.0, preview_y, 256.0, 150.0), Color(0.08, 0.09, 0.06))
+		_hud_node.draw_string(ThemeDB.fallback_font, Vector2(card_x + 90.0, preview_y + 80.0),
+			"Loading map...", HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color(0.4, 0.38, 0.3))
+
+	# Player count (below preview)
+	var info_y: float = preview_y + 158.0
 	var count_text: String = "Players: %d / 20" % _lobby_player_count
-	_hud_node.draw_string(ThemeDB.fallback_font, Vector2(card_x + 12.0, card_y + 52.0),
+	_hud_node.draw_string(ThemeDB.fallback_font, Vector2(card_x + 12.0, info_y),
 		count_text, HORIZONTAL_ALIGNMENT_LEFT, -1, 13, Config.UI_TEXT_GOLD)
 
 	# Player count progress bar
 	var bar_x: float = card_x + 12.0
-	var bar_y: float = card_y + 60.0
+	var bar_y: float = info_y + 8.0
 	var bar_w: float = card_w - 24.0
 	var bar_h: float = 8.0
 	var fill: float = float(_lobby_player_count) / 20.0
@@ -1862,35 +1882,35 @@ func _draw_lobby() -> void:
 	_hud_node.draw_rect(Rect2(bar_x, bar_y, bar_w, bar_h), Color(0.3, 0.28, 0.2), false, 1.0)
 
 	# Min players note
-	_hud_node.draw_string(ThemeDB.fallback_font, Vector2(card_x + 12.0, card_y + 84.0),
+	_hud_node.draw_string(ThemeDB.fallback_font, Vector2(card_x + 12.0, bar_y + 20.0),
 		"Min 2 players to start", HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color(0.5, 0.48, 0.38))
 
-	# Timer (only when assigned a slot)
-	if Net.my_player_index >= 0:
+	# Timer (only when joined)
+	if Net.my_player_index >= 0 and _lobby_player_count >= Config.MIN_PLAYERS_TO_START:
 		var secs: int = maxi(0, int(ceil(_lobby_timer)))
 		var timer_text: String = "Starting in 0:%02d" % secs
-		_hud_node.draw_string(ThemeDB.fallback_font, Vector2(card_x + 12.0, card_y + 104.0),
+		_hud_node.draw_string(ThemeDB.fallback_font, Vector2(card_x + 12.0, bar_y + 36.0),
 			timer_text, HORIZONTAL_ALIGNMENT_LEFT, -1, 13, Color(0.9, 0.85, 0.4))
 
-	# Join button / status
+	# Join / Leave button
 	var btn_w: float = 160.0
 	var btn_h: float = 30.0
 	var btn_x: float = card_x + card_w * 0.5 - btn_w * 0.5
-	var btn_y: float = card_y + card_h - btn_h - 16.0
+	var btn_y: float = card_y + card_h - btn_h - 12.0
 
 	if Net.my_player_index < 0:
-		# Pulsing join button (waiting for connection/assignment)
+		# "Click to Join" button (pulsing gold)
 		var pulse: float = 0.8 + sin(float(Time.get_ticks_msec()) * 0.004) * 0.2
 		_hud_node.draw_rect(Rect2(btn_x, btn_y, btn_w, btn_h), Color(0.2, 0.15, 0.05, 0.9))
 		_hud_node.draw_rect(Rect2(btn_x, btn_y, btn_w, btn_h), Color(1.0, 0.85, 0.3, pulse), false, 2.0)
-		var label: String = "Connecting..." if not _lobby_joined else "Joining..."
 		_hud_node.draw_string(ThemeDB.fallback_font, Vector2(btn_x + 28.0, btn_y + 20.0),
-			label, HORIZONTAL_ALIGNMENT_LEFT, -1, 14, Color(1.0, 0.85, 0.3, pulse))
+			"Click to Join", HORIZONTAL_ALIGNMENT_LEFT, -1, 14, Color(1.0, 0.85, 0.3, pulse))
 	else:
-		_hud_node.draw_rect(Rect2(btn_x, btn_y, btn_w, btn_h), Color(0.1, 0.2, 0.1, 0.9))
-		_hud_node.draw_rect(Rect2(btn_x, btn_y, btn_w, btn_h), Color(0.3, 0.7, 0.3), false, 1.5)
+		# "Leave" button (red-ish) + joined status
+		_hud_node.draw_rect(Rect2(btn_x, btn_y, btn_w, btn_h), Color(0.2, 0.1, 0.1, 0.9))
+		_hud_node.draw_rect(Rect2(btn_x, btn_y, btn_w, btn_h), Color(0.8, 0.3, 0.3), false, 1.5)
 		_hud_node.draw_string(ThemeDB.fallback_font, Vector2(btn_x + 18.0, btn_y + 20.0),
-			"Joined! Waiting...", HORIZONTAL_ALIGNMENT_LEFT, -1, 13, Color(0.3, 0.9, 0.3))
+			"Joined - Click to Leave", HORIZONTAL_ALIGNMENT_LEFT, -1, 12, Color(0.9, 0.4, 0.4))
 
 
 func _draw_game_over() -> void:
@@ -2000,11 +2020,13 @@ func _unhandled_input(event: InputEvent) -> void:
 	if Net.role == Net.Role.SERVER:
 		return
 
-	# Lobby: click to join
+	# Lobby: click to join/leave
 	if _game_state == GameState.LOBBY:
 		if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
-			if not _lobby_joined:
-				_lobby_joined = true
+			if Net.my_player_index < 0:
+				Net.rpc_join_lobby.rpc_id(1)
+			else:
+				Net.rpc_leave_lobby.rpc_id(1)
 		return
 
 	if not (event is InputEventKey and event.pressed):
@@ -2143,10 +2165,16 @@ func _on_game_event(event_data: PackedByteArray) -> void:
 	_handle_game_event(event_data)
 
 
-func _on_lobby_updated(player_count: int, timer: float, map_index: int) -> void:
+func _on_lobby_updated(player_count: int, timer: float, map_index: int, seed_val: int) -> void:
 	_lobby_player_count = player_count
 	_lobby_timer = timer
 	_lobby_map_index = map_index
+	if seed_val != 0 and (seed_val != _lobby_seed or _lobby_preview_tex == null):
+		_lobby_seed = seed_val
+		_map_gen.generate(seed_val, map_index)
+		var preview: Image = _map_gen._terrain_image.duplicate()
+		preview.resize(200, 150, Image.INTERPOLATE_BILINEAR)
+		_lobby_preview_tex = ImageTexture.create_from_image(preview)
 
 
 # ===========================================================================
@@ -2300,6 +2328,8 @@ func _broadcast_snapshot() -> void:
 # ===========================================================================
 
 func _apply_snapshot(data: PackedByteArray) -> void:
+	if _game_state != GameState.PLAYING:
+		return
 	var snapshot: Dictionary = bytes_to_var(data)
 	if snapshot.is_empty():
 		return
@@ -2313,7 +2343,8 @@ func _apply_snapshot(data: PackedByteArray) -> void:
 		if idx < 0 or idx >= _players.size():
 			continue
 		var player: Player = _players[idx]
-		player.position = Vector2(pd.get("x", 0.0), pd.get("y", 0.0))
+		# Store position as interpolation target (don't snap)
+		_player_targets[idx] = Vector2(pd.get("x", 0.0), pd.get("y", 0.0))
 		player.hp = pd.get("hp", 0.0)
 		player.max_hp = pd.get("max_hp", 100.0)
 		player.gold = pd.get("gold", 0)
@@ -2341,7 +2372,7 @@ func _apply_snapshot(data: PackedByteArray) -> void:
 		seen_ids[mid] = true
 		if _mob_by_id.has(mid):
 			var mob: Mob = _mob_by_id[mid]
-			mob.position = Vector2(md.get("x", 0.0), md.get("y", 0.0))
+			_mob_targets[mid] = Vector2(md.get("x", 0.0), md.get("y", 0.0))
 			mob.hp = md.get("hp", 0.0)
 			mob.max_hp = md.get("mhp", 0.0)
 			mob.alive = true
@@ -2430,6 +2461,42 @@ func _send_input_to_server() -> void:
 	}
 
 	Net.client_send_input(var_to_bytes(input))
+
+
+func _predict_human_movement(delta: float) -> void:
+	if _human == null or not _human.alive:
+		return
+	var move_dir := Vector2.ZERO
+	if Input.is_action_pressed("ui_left"):
+		move_dir.x -= 1.0
+	if Input.is_action_pressed("ui_right"):
+		move_dir.x += 1.0
+	if Input.is_action_pressed("ui_up"):
+		move_dir.y -= 1.0
+	if Input.is_action_pressed("ui_down"):
+		move_dir.y += 1.0
+	if move_dir.length_squared() > 0.0:
+		move_dir = move_dir.normalized()
+		_human.position += move_dir * Config.PLAYER_SPEED * _human.speed_mult * _human.get_speed_bonus() * delta
+		_human.position.x = clampf(_human.position.x, 0.0, float(Config.MAP_WIDTH - 1))
+		_human.position.y = clampf(_human.position.y, 0.0, float(Config.MAP_HEIGHT - 1))
+		_human.facing_dir = move_dir
+
+
+func _interpolate_entities(delta: float) -> void:
+	var t: float = minf(delta * 18.0, 1.0)
+	for player in _players:
+		if player == _human:
+			# Human uses prediction — gently correct toward server position
+			if _player_targets.has(player.player_id):
+				var server_pos: Vector2 = _player_targets[player.player_id]
+				player.position = player.position.lerp(server_pos, minf(delta * 8.0, 1.0))
+		else:
+			if _player_targets.has(player.player_id):
+				player.position = player.position.lerp(_player_targets[player.player_id], t)
+	for mob in _mobs:
+		if _mob_targets.has(mob.mob_id):
+			mob.position = mob.position.lerp(_mob_targets[mob.mob_id], t)
 
 
 # ===========================================================================

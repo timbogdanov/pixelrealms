@@ -467,8 +467,9 @@ func _find_walkable_near(target: Vector2, search_radius: int) -> Vector2:
 	if _is_walkable_idx(tx, ty):
 		return Vector2(tx, ty)
 
-	# Expanding ring search
-	for r in range(1, search_radius + 1):
+	# Expanding ring search (try up to double radius as fallback)
+	var max_radius: int = search_radius * 2
+	for r in range(1, max_radius + 1):
 		for dy in range(-r, r + 1):
 			for dx in range(-r, r + 1):
 				if abs(dx) != r and abs(dy) != r:
@@ -486,4 +487,4 @@ func _is_walkable_idx(x: int, y: int) -> bool:
 	if x < 0 or x >= _width or y < 0 or y >= _height:
 		return false
 	var t: int = terrain[y * _width + x]
-	return t != Config.Terrain.STONE
+	return t != Config.Terrain.STONE and t != Config.Terrain.WATER and t != Config.Terrain.SHALLOW_WATER
