@@ -10,9 +10,13 @@ var role: int = Role.NONE
 
 # Server state
 var connected_peers: Array[int] = []
-var peer_to_player: Dictionary = {}   # peer_id -> player_index
-var player_to_peer: Dictionary = {}   # player_index -> peer_id
+var peer_to_player: Dictionary = {}   # peer_id -> player_index (LOBBY only)
+var player_to_peer: Dictionary = {}   # player_index -> peer_id (LOBBY only)
 var _next_player_slot: int = 0
+
+# Multi-game routing (server)
+var peer_to_game: Dictionary = {}  # peer_id -> game_id (-1 or absent = in lobby)
+var _next_game_id: int = 0
 
 # Client state
 var my_player_index: int = -1
@@ -34,6 +38,7 @@ signal state_snapshot_received(snapshot: PackedByteArray)
 signal input_received(peer_id: int, input_data: PackedByteArray)
 signal action_received(peer_id: int, action_data: PackedByteArray)
 signal game_event_received(event_data: PackedByteArray)
+signal returned_to_lobby()
 
 
 func _ready() -> void:
@@ -60,8 +65,7 @@ func _start_server() -> void:
 	multiplayer.multiplayer_peer = peer
 	multiplayer.peer_connected.connect(_on_peer_connected)
 	multiplayer.peer_disconnected.connect(_on_peer_disconnected)
-	lobby_map_index = randi() % Config.MAP_NAMES.size()
-	lobby_seed = randi()
+	_reset_lobby()
 	print("Server started on port %d, map: %s" % [Config.SERVER_PORT, Config.MAP_NAMES[lobby_map_index]])
 
 
@@ -103,10 +107,13 @@ func _on_peer_disconnected(peer_id: int) -> void:
 	if role != Role.SERVER:
 		return
 	connected_peers.erase(peer_id)
+	# Clean up lobby assignment if in lobby
 	var player_idx: int = peer_to_player.get(peer_id, -1)
 	if player_idx >= 0:
 		player_to_peer.erase(player_idx)
 		peer_to_player.erase(peer_id)
+	# Clean up game assignment (main.gd handles notifying the GameInstance)
+	peer_to_game.erase(peer_id)
 	print("Peer disconnected: %d (total: %d)" % [peer_id, connected_peers.size()])
 	peer_left.emit(peer_id)
 
@@ -139,38 +146,53 @@ func server_assign_player(peer_id: int) -> int:
 func server_broadcast_lobby(timer: float) -> void:
 	lobby_timer = timer
 	lobby_player_count = peer_to_player.size()
+	# Only broadcast to peers in the lobby (not in a game)
 	for pid in connected_peers:
-		rpc_lobby_update.rpc_id(pid, lobby_player_count, timer, lobby_map_index, lobby_seed)
+		if not peer_to_game.has(pid):
+			rpc_lobby_update.rpc_id(pid, lobby_player_count, timer, lobby_map_index, lobby_seed)
 
 
-func server_start_game(seed_val: int) -> void:
-	lobby_started = true
-	var total_humans: int = connected_peers.size()
-	for pid in connected_peers:
-		var idx: int = peer_to_player.get(pid, -1)
-		rpc_game_start.rpc_id(pid, seed_val, lobby_map_index, idx, total_humans)
+func _reset_lobby() -> void:
+	## Resets lobby state for a new round. Called after game starts.
+	peer_to_player.clear()
+	player_to_peer.clear()
+	_next_player_slot = 0
+	lobby_map_index = randi() % Config.MAP_NAMES.size()
+	lobby_seed = randi()
+	lobby_started = false
+	lobby_timer = Config.LOBBY_TIMER
 
 
-func server_send_snapshot(snapshot: PackedByteArray) -> void:
-	for pid in connected_peers:
-		rpc_state_snapshot.rpc_id(pid, snapshot)
+func server_start_game_for_lobby() -> Dictionary:
+	## Moves current lobby peers into a new game. Returns {game_id, peers}.
+	var gid: int = _next_game_id
+	_next_game_id += 1
+	var peers_copy: Dictionary = peer_to_player.duplicate()
+	# Move lobby peers into the game
+	for pid: int in peers_copy:
+		peer_to_game[pid] = gid
+	# Reset lobby for next wave of players
+	_reset_lobby()
+	print("Game #%d started with %d human players. New lobby ready." % [gid, peers_copy.size()])
+	return {"game_id": gid, "peers": peers_copy}
 
 
-func server_send_event(event: PackedByteArray) -> void:
-	for pid in connected_peers:
-		rpc_game_event.rpc_id(pid, event)
+func server_end_game(game_id: int, peer_ids: Array) -> void:
+	## Sends return-to-lobby RPC to all peers that were in this game.
+	for pid: int in peer_ids:
+		if connected_peers.has(pid):
+			peer_to_game.erase(pid)
+			rpc_return_to_lobby.rpc_id(pid)
+	print("Game #%d ended, %d peers returned to lobby." % [game_id, peer_ids.size()])
 
 
-func is_human_player(player_idx: int) -> bool:
-	return player_to_peer.has(player_idx)
+func get_game_id_for_peer(peer_id: int) -> int:
+	## Returns game_id for a peer, or -1 if in lobby.
+	return peer_to_game.get(peer_id, -1)
 
 
-func get_bot_indices(total_players: int) -> Array[int]:
-	var bots: Array[int] = []
-	for i in total_players:
-		if not player_to_peer.has(i):
-			bots.append(i)
-	return bots
+func is_peer_in_lobby(peer_id: int) -> bool:
+	return not peer_to_game.has(peer_id)
 
 
 # ---------------------------------------------------------------------------
@@ -198,6 +220,9 @@ func rpc_join_lobby() -> void:
 	if role != Role.SERVER:
 		return
 	var sender: int = multiplayer.get_remote_sender_id()
+	# Can only join lobby if not in a game
+	if peer_to_game.has(sender):
+		return
 	if peer_to_player.has(sender):
 		return  # already joined
 	var slot: int = server_assign_player(sender)
@@ -288,3 +313,13 @@ func rpc_game_event(event_bytes: PackedByteArray) -> void:
 	if role != Role.CLIENT:
 		return
 	game_event_received.emit(event_bytes)
+
+
+@rpc("authority", "call_remote", "reliable")
+func rpc_return_to_lobby() -> void:
+	if role != Role.CLIENT:
+		return
+	my_player_index = -1
+	lobby_started = false
+	print("Returned to lobby")
+	returned_to_lobby.emit()
