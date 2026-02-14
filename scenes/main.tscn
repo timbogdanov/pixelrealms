@@ -1,0 +1,16 @@
+[gd_scene load_steps=4 format=3]
+
+[ext_resource type="Script" path="res://scripts/main.gd" id="1_main"]
+[ext_resource type="Script" path="res://scripts/map_generator.gd" id="2_mapgen"]
+[ext_resource type="Script" path="res://scripts/camera_controller.gd" id="3_camera"]
+
+[node name="Main" type="Node2D"]
+script = ExtResource("1_main")
+
+[node name="MapGenerator" type="Node2D" parent="."]
+script = ExtResource("2_mapgen")
+
+[node name="MapSprite" type="Sprite2D" parent="MapGenerator"]
+
+[node name="Camera" type="Camera2D" parent="."]
+script = ExtResource("3_camera")
