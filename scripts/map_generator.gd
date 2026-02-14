@@ -21,38 +21,129 @@ var mob_spawn_zones: Array = []
 # Hill visual color (golden/yellow stone)
 const HILL_COLOR := Color(0.72, 0.65, 0.28)
 
-# Country shape polygons (normalized 0.0-1.0)
+# Country shape polygons (normalized 0.0-1.0, clockwise)
 const USA_POLY: Array[Vector2] = [
-	Vector2(0.05, 0.15), Vector2(0.12, 0.12), Vector2(0.20, 0.10),
-	Vector2(0.30, 0.08), Vector2(0.40, 0.12), Vector2(0.48, 0.10),
-	Vector2(0.55, 0.12), Vector2(0.65, 0.10), Vector2(0.75, 0.12),
-	Vector2(0.82, 0.16), Vector2(0.90, 0.22), Vector2(0.95, 0.32),
-	Vector2(0.93, 0.42), Vector2(0.88, 0.52), Vector2(0.80, 0.58),
-	Vector2(0.72, 0.65), Vector2(0.62, 0.72), Vector2(0.52, 0.78),
-	Vector2(0.42, 0.82), Vector2(0.32, 0.88), Vector2(0.22, 0.85),
-	Vector2(0.14, 0.78), Vector2(0.08, 0.68), Vector2(0.05, 0.55),
-	Vector2(0.04, 0.42), Vector2(0.03, 0.28),
+	# Pacific NW - Washington
+	Vector2(0.06, 0.08), Vector2(0.05, 0.12), Vector2(0.04, 0.17),
+	# Oregon coast
+	Vector2(0.04, 0.22), Vector2(0.04, 0.28),
+	# California
+	Vector2(0.05, 0.33), Vector2(0.04, 0.38), Vector2(0.05, 0.44),
+	Vector2(0.07, 0.50), Vector2(0.09, 0.54), Vector2(0.10, 0.58),
+	# Mexico border (straight east)
+	Vector2(0.16, 0.60), Vector2(0.22, 0.60), Vector2(0.28, 0.60),
+	# Texas - Rio Grande
+	Vector2(0.32, 0.58), Vector2(0.33, 0.64), Vector2(0.35, 0.70),
+	Vector2(0.37, 0.74), Vector2(0.39, 0.70), Vector2(0.41, 0.74),
+	# Gulf coast
+	Vector2(0.45, 0.74), Vector2(0.48, 0.78), Vector2(0.51, 0.75),
+	Vector2(0.55, 0.74),
+	# Florida
+	Vector2(0.59, 0.72), Vector2(0.62, 0.70), Vector2(0.64, 0.74),
+	Vector2(0.65, 0.80), Vector2(0.66, 0.86), Vector2(0.68, 0.90),
+	Vector2(0.71, 0.86), Vector2(0.73, 0.80), Vector2(0.73, 0.74),
+	Vector2(0.71, 0.70),
+	# East coast
+	Vector2(0.74, 0.64), Vector2(0.78, 0.58), Vector2(0.81, 0.52),
+	Vector2(0.83, 0.46), Vector2(0.85, 0.42),
+	# Chesapeake indent
+	Vector2(0.83, 0.40), Vector2(0.85, 0.38),
+	# NJ / NYC / New England
+	Vector2(0.87, 0.34), Vector2(0.89, 0.30), Vector2(0.91, 0.26),
+	# Cape Cod
+	Vector2(0.93, 0.22), Vector2(0.91, 0.20),
+	# Maine
+	Vector2(0.93, 0.16), Vector2(0.93, 0.12),
+	# Northern border (east to west)
+	Vector2(0.88, 0.10), Vector2(0.80, 0.08), Vector2(0.72, 0.08),
+	# Great Lakes indents
+	Vector2(0.66, 0.10), Vector2(0.60, 0.08), Vector2(0.54, 0.10),
+	Vector2(0.50, 0.08),
+	# Lake Michigan dip south
+	Vector2(0.48, 0.16), Vector2(0.46, 0.08),
+	# Lake Superior / Minnesota
+	Vector2(0.42, 0.10), Vector2(0.38, 0.08),
+	# Straight border west
+	Vector2(0.32, 0.08), Vector2(0.24, 0.08), Vector2(0.16, 0.08),
+	Vector2(0.10, 0.08),
 ]
+
 const CANADA_POLY: Array[Vector2] = [
-	Vector2(0.05, 0.38), Vector2(0.08, 0.28), Vector2(0.14, 0.18),
-	Vector2(0.22, 0.12), Vector2(0.32, 0.08), Vector2(0.42, 0.05),
-	Vector2(0.52, 0.04), Vector2(0.62, 0.05), Vector2(0.72, 0.08),
-	Vector2(0.80, 0.14), Vector2(0.88, 0.22), Vector2(0.94, 0.32),
-	Vector2(0.95, 0.42), Vector2(0.92, 0.55), Vector2(0.86, 0.65),
-	Vector2(0.78, 0.74), Vector2(0.68, 0.80), Vector2(0.55, 0.85),
-	Vector2(0.42, 0.88), Vector2(0.30, 0.85), Vector2(0.20, 0.78),
-	Vector2(0.12, 0.68), Vector2(0.07, 0.55),
+	# BC Pacific coast (south to north)
+	Vector2(0.06, 0.90), Vector2(0.04, 0.82), Vector2(0.03, 0.74),
+	Vector2(0.05, 0.66), Vector2(0.04, 0.56),
+	# Yukon / NWT Arctic coast (west to east)
+	Vector2(0.08, 0.44), Vector2(0.14, 0.32), Vector2(0.22, 0.22),
+	Vector2(0.30, 0.14), Vector2(0.38, 0.08), Vector2(0.44, 0.05),
+	# West of Hudson Bay - turn south
+	Vector2(0.48, 0.10), Vector2(0.48, 0.18), Vector2(0.46, 0.28),
+	# West coast of Hudson Bay (going south)
+	Vector2(0.44, 0.38), Vector2(0.44, 0.48),
+	# James Bay (bottom of Hudson Bay)
+	Vector2(0.46, 0.56), Vector2(0.48, 0.62), Vector2(0.50, 0.66),
+	Vector2(0.52, 0.62),
+	# East coast of Hudson Bay (going north)
+	Vector2(0.54, 0.54), Vector2(0.56, 0.44), Vector2(0.58, 0.34),
+	Vector2(0.60, 0.26),
+	# Hudson Strait / Baffin
+	Vector2(0.58, 0.18), Vector2(0.60, 0.12), Vector2(0.64, 0.08),
+	Vector2(0.70, 0.06), Vector2(0.74, 0.10), Vector2(0.72, 0.18),
+	# Labrador coast (going south)
+	Vector2(0.76, 0.24), Vector2(0.82, 0.30), Vector2(0.88, 0.36),
+	# Newfoundland
+	Vector2(0.92, 0.42), Vector2(0.94, 0.48), Vector2(0.90, 0.54),
+	# Maritimes
+	Vector2(0.86, 0.58), Vector2(0.84, 0.64), Vector2(0.82, 0.68),
+	Vector2(0.80, 0.66), Vector2(0.78, 0.70),
+	# Southern border (east to west)
+	Vector2(0.74, 0.76), Vector2(0.68, 0.80), Vector2(0.62, 0.84),
+	Vector2(0.56, 0.82), Vector2(0.50, 0.86), Vector2(0.44, 0.88),
+	Vector2(0.36, 0.90), Vector2(0.28, 0.90), Vector2(0.20, 0.90),
+	Vector2(0.12, 0.90),
 ]
+
 const EUROPE_POLY: Array[Vector2] = [
-	Vector2(0.28, 0.08), Vector2(0.38, 0.05), Vector2(0.50, 0.06),
-	Vector2(0.62, 0.08), Vector2(0.72, 0.14), Vector2(0.80, 0.22),
-	Vector2(0.86, 0.32), Vector2(0.90, 0.44), Vector2(0.88, 0.56),
-	Vector2(0.84, 0.66), Vector2(0.76, 0.75), Vector2(0.66, 0.82),
-	Vector2(0.54, 0.88), Vector2(0.42, 0.92), Vector2(0.32, 0.88),
-	Vector2(0.22, 0.80), Vector2(0.16, 0.70), Vector2(0.12, 0.58),
-	Vector2(0.10, 0.44), Vector2(0.12, 0.32), Vector2(0.18, 0.20),
-	Vector2(0.24, 0.12),
+	# Scandinavia - North Cape, going east
+	Vector2(0.40, 0.04), Vector2(0.46, 0.06), Vector2(0.52, 0.08),
+	# Finland / Baltic approach
+	Vector2(0.56, 0.12), Vector2(0.60, 0.16),
+	# Baltic States indent
+	Vector2(0.56, 0.20), Vector2(0.58, 0.24),
+	# Eastern border (going south)
+	Vector2(0.64, 0.22), Vector2(0.70, 0.26), Vector2(0.76, 0.32),
+	Vector2(0.80, 0.38),
+	# Black Sea coast
+	Vector2(0.82, 0.44), Vector2(0.78, 0.48),
+	# Greece / Balkans
+	Vector2(0.74, 0.52), Vector2(0.72, 0.58), Vector2(0.74, 0.64),
+	Vector2(0.72, 0.70), Vector2(0.70, 0.76),
+	# Greek peninsula tip
+	Vector2(0.68, 0.72), Vector2(0.66, 0.66),
+	# Adriatic / Albania
+	Vector2(0.64, 0.60), Vector2(0.60, 0.56),
+	# Italian boot
+	Vector2(0.58, 0.62), Vector2(0.56, 0.70), Vector2(0.54, 0.78),
+	Vector2(0.52, 0.74), Vector2(0.50, 0.68), Vector2(0.48, 0.62),
+	Vector2(0.46, 0.56),
+	# French Riviera / Spain Mediterranean
+	Vector2(0.42, 0.52), Vector2(0.38, 0.56), Vector2(0.34, 0.60),
+	# Iberian peninsula - south
+	Vector2(0.30, 0.66), Vector2(0.26, 0.72), Vector2(0.22, 0.76),
+	# Gibraltar / Portugal
+	Vector2(0.18, 0.72), Vector2(0.14, 0.66), Vector2(0.12, 0.58),
+	Vector2(0.10, 0.50), Vector2(0.12, 0.44),
+	# Galicia / Bay of Biscay
+	Vector2(0.16, 0.40), Vector2(0.18, 0.36),
+	# Brittany
+	Vector2(0.20, 0.32), Vector2(0.18, 0.28), Vector2(0.20, 0.24),
+	# Low Countries / North Sea
+	Vector2(0.24, 0.20), Vector2(0.28, 0.16), Vector2(0.32, 0.14),
+	# Denmark
+	Vector2(0.36, 0.12), Vector2(0.34, 0.08),
+	# Norway west coast (going north)
+	Vector2(0.36, 0.06), Vector2(0.38, 0.08), Vector2(0.38, 0.04),
 ]
+
 const MAP_POLYS: Array[Array] = [USA_POLY, CANADA_POLY, EUROPE_POLY]
 
 func _ready() -> void:
