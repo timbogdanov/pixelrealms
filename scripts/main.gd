@@ -299,15 +299,27 @@ func _process_lobby_server(delta: float) -> void:
 	_lobby_broadcast_timer -= delta
 	if _lobby_broadcast_timer <= 0.0:
 		_lobby_broadcast_timer = 0.5
-		_lobby_player_count = Net.peer_to_player.size()
+		_lobby_player_count = Net.get_total_lobby_count()
 		Net.server_broadcast_lobby(_lobby_timer)
 
-	# Timer only counts down after min players joined
-	if Net.peer_to_player.size() < Config.MIN_PLAYERS_TO_START:
+	# If game loading has been triggered, keep counting down regardless
+	if Net._game_loading_started:
+		_lobby_timer -= delta
+		if _lobby_timer <= 0.0:
+			_start_new_game()
+		return
+
+	# Timer only counts down after min players joined (combined count)
+	if Net.get_total_lobby_count() < Config.MIN_PLAYERS_TO_START:
 		_lobby_timer = Config.LOBBY_TIMER
 		return
 
 	_lobby_timer -= delta
+
+	# Tell HTML lobby clients to load Godot when lead time is reached
+	if _lobby_timer <= Config.GAME_LOAD_LEAD_TIME and not Net._game_loading_started:
+		Net.lobby_ws_send_load_game()
+
 	if _lobby_timer <= 0.0:
 		_start_new_game()
 
@@ -317,6 +329,10 @@ func _process_lobby_server(delta: float) -> void:
 # ===========================================================================
 
 func _start_new_game() -> void:
+	# Grace period: if no Godot clients connected yet, wait a bit longer
+	if Net.peer_to_player.size() == 0:
+		_lobby_timer = 5.0
+		return
 	var result: Dictionary = Net.server_start_game_for_lobby()
 	var game_id: int = result["game_id"]
 	var peers: Dictionary = result["peers"]

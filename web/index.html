@@ -4,6 +4,10 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Pixel Realms - Battle Arena</title>
+<!-- Prefetch Godot game assets for fast load when game starts -->
+<link rel="prefetch" href="/play/index.js">
+<link rel="prefetch" href="/play/index.wasm">
+<link rel="prefetch" href="/play/index.pck">
 <style>
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -305,8 +309,10 @@ body {
 <div class="footer">Pixel Realms &middot; pixelrealms.io</div>
 
 <script>
-const POLL_INTERVAL = 2000;
 let serverOnline = false;
+let lobbyWs = null;
+let heartbeatInterval = null;
+let joined = false;
 
 // Restore username
 const savedName = localStorage.getItem('pixel_realms_username');
@@ -333,14 +339,67 @@ function play() {
 	}
 	errorEl.textContent = '';
 	localStorage.setItem('pixel_realms_username', name);
-	window.location.href = '/play/';
+
+	if (joined) return;
+	joined = true;
+
+	// Change button to waiting state
+	var btn = document.querySelector('.play-btn');
+	btn.textContent = 'WAITING...';
+	btn.style.cursor = 'default';
+	btn.style.animation = 'none';
+	usernameInput.disabled = true;
+
+	connectLobbyWs(name);
 }
 
+function connectLobbyWs(name) {
+	var protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+	var url = protocol + '//' + location.host + '/ws-lobby';
+
+	lobbyWs = new WebSocket(url);
+
+	lobbyWs.onopen = function() {
+		setOnline(true);
+		lobbyWs.send(JSON.stringify({ type: 'join', name: name }));
+		heartbeatInterval = setInterval(function() {
+			if (lobbyWs && lobbyWs.readyState === WebSocket.OPEN) {
+				lobbyWs.send(JSON.stringify({ type: 'heartbeat' }));
+			}
+		}, 5000);
+	};
+
+	lobbyWs.onmessage = function(event) {
+		try {
+			var data = JSON.parse(event.data);
+			if (data.type === 'lobby_update') {
+				updateUI(data);
+			} else if (data.type === 'load_game') {
+				window.location.href = '/play/';
+			}
+		} catch (e) {
+			console.error('Lobby WS parse error:', e);
+		}
+	};
+
+	lobbyWs.onclose = function() {
+		setOnline(false);
+		clearInterval(heartbeatInterval);
+		if (joined) {
+			setTimeout(function() { connectLobbyWs(name); }, 3000);
+		}
+	};
+
+	lobbyWs.onerror = function() {};
+}
+
+// HTTP polling fallback (before user clicks Play)
 async function fetchLobby() {
+	if (joined) return;
 	try {
-		const res = await fetch('/api/lobby');
+		var res = await fetch('/api/lobby');
 		if (!res.ok) throw new Error('HTTP ' + res.status);
-		const data = await res.json();
+		var data = await res.json();
 		updateUI(data);
 		setOnline(true);
 	} catch (e) {
@@ -350,11 +409,11 @@ async function fetchLobby() {
 
 function setOnline(online) {
 	serverOnline = online;
-	const dot = document.getElementById('status-dot');
-	const text = document.getElementById('status-text');
+	var dot = document.getElementById('status-dot');
+	var text = document.getElementById('status-text');
 	if (online) {
 		dot.className = 'status-dot online';
-		text.textContent = 'Server Online';
+		text.textContent = joined ? 'Joined Lobby' : 'Server Online';
 	} else {
 		dot.className = 'status-dot offline';
 		text.textContent = 'Server Offline';
@@ -367,11 +426,13 @@ function setOnline(online) {
 
 function updateUI(data) {
 	document.getElementById('player-count').textContent = data.player_count || 0;
-	document.getElementById('active-games').textContent = data.active_games || 0;
+	if (data.active_games !== undefined) {
+		document.getElementById('active-games').textContent = data.active_games;
+	}
 	document.getElementById('map-name').textContent = data.map_name || '-';
 
-	const timer = data.timer;
-	const countdownEl = document.getElementById('countdown');
+	var timer = data.timer;
+	var countdownEl = document.getElementById('countdown');
 	if (timer !== undefined && timer < 60 && (data.player_count || 0) >= 2) {
 		countdownEl.textContent = Math.ceil(timer) + 's';
 		countdownEl.classList.add('gold');
@@ -380,18 +441,22 @@ function updateUI(data) {
 		countdownEl.classList.remove('gold');
 	}
 
-	// Leaderboard
-	const lb = data.leaderboard || [];
-	const body = document.getElementById('leaderboard-body');
+	// Leaderboard (only from HTTP polling)
+	if (data.leaderboard) {
+		renderLeaderboard(data.leaderboard);
+	}
+}
+
+function renderLeaderboard(lb) {
+	var body = document.getElementById('leaderboard-body');
 	if (lb.length === 0) {
 		body.innerHTML = '<div class="leaderboard-empty">No games played yet</div>';
 		return;
 	}
-
-	const recent = lb.slice(-10).reverse();
-	let html = '<table class="leaderboard-table"><tr><th></th><th>Player</th><th>Map</th><th style="text-align:right">When</th></tr>';
+	var recent = lb.slice(-10).reverse();
+	var html = '<table class="leaderboard-table"><tr><th></th><th>Player</th><th>Map</th><th style="text-align:right">When</th></tr>';
 	recent.forEach(function(entry, i) {
-		const ago = timeAgo(entry.timestamp);
+		var ago = timeAgo(entry.timestamp);
 		html += '<tr>';
 		html += '<td class="leaderboard-rank">' + (i + 1) + '</td>';
 		html += '<td class="leaderboard-name">' + escapeHtml(entry.name || 'Unknown') + '</td>';
@@ -405,8 +470,8 @@ function updateUI(data) {
 
 function timeAgo(timestamp) {
 	if (!timestamp) return '';
-	const now = Date.now() / 1000;
-	const diff = now - timestamp;
+	var now = Date.now() / 1000;
+	var diff = now - timestamp;
 	if (diff < 60) return 'just now';
 	if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
 	if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
@@ -414,14 +479,14 @@ function timeAgo(timestamp) {
 }
 
 function escapeHtml(str) {
-	const div = document.createElement('div');
+	var div = document.createElement('div');
 	div.textContent = str;
 	return div.innerHTML;
 }
 
-// Start polling
+// Start HTTP polling (stops when user joins via WebSocket)
 fetchLobby();
-setInterval(fetchLobby, POLL_INTERVAL);
+setInterval(fetchLobby, 2000);
 </script>
 
 </body>

@@ -22,6 +22,12 @@ var _next_game_id: int = 0
 var peer_usernames: Dictionary = {}  # peer_id -> String
 var active_game_count: int = 0  # updated by main.gd
 
+# HTML lobby WebSocket (lightweight, separate from multiplayer peer)
+var _lobby_tcp_server: TCPServer = null
+var _lobby_ws_clients: Array = []  # Array of {ws: WebSocketPeer, name: String, last_hb: float}
+var _html_player_count: int = 0
+var _game_loading_started: bool = false  # prevents timer reset during transition
+
 # Client state
 var my_player_index: int = -1
 var server_url: String = ""
@@ -70,6 +76,7 @@ func _start_server() -> void:
 	multiplayer.peer_connected.connect(_on_peer_connected)
 	multiplayer.peer_disconnected.connect(_on_peer_disconnected)
 	_reset_lobby()
+	_start_lobby_ws_server()
 	print("Server started on port %d, map: %s" % [Config.SERVER_PORT, Config.MAP_NAMES[lobby_map_index]])
 
 
@@ -93,6 +100,124 @@ func _get_server_url() -> String:
 		if js_url != "":
 			return js_url
 	return Config.SERVER_URL
+
+
+# ---------------------------------------------------------------------------
+# Server: HTML lobby WebSocket (lightweight JSON protocol on port 9091)
+# ---------------------------------------------------------------------------
+
+func _start_lobby_ws_server() -> void:
+	_lobby_tcp_server = TCPServer.new()
+	var err: int = _lobby_tcp_server.listen(Config.LOBBY_WS_PORT)
+	if err != OK:
+		push_error("Failed to start lobby WS server on port %d: %d" % [Config.LOBBY_WS_PORT, err])
+		return
+	print("Lobby WebSocket server started on port %d" % Config.LOBBY_WS_PORT)
+
+
+func _process(_delta: float) -> void:
+	if role != Role.SERVER or _lobby_tcp_server == null:
+		return
+	_process_lobby_ws_server()
+
+
+func _process_lobby_ws_server() -> void:
+	# Accept new TCP connections
+	while _lobby_tcp_server.is_connection_available():
+		var tcp: StreamPeerTCP = _lobby_tcp_server.take_connection()
+		var ws: WebSocketPeer = WebSocketPeer.new()
+		ws.accept_stream(tcp)
+		var client: Dictionary = {
+			"ws": ws,
+			"name": "",
+			"last_hb": Time.get_unix_time_from_system(),
+		}
+		_lobby_ws_clients.append(client)
+
+	# Poll existing clients
+	var to_remove: Array = []
+	var now: float = Time.get_unix_time_from_system()
+
+	for i in _lobby_ws_clients.size():
+		var client: Dictionary = _lobby_ws_clients[i]
+		var ws: WebSocketPeer = client["ws"]
+		ws.poll()
+
+		var state: int = ws.get_ready_state()
+		if state == WebSocketPeer.STATE_CLOSED:
+			to_remove.append(i)
+			continue
+
+		if state != WebSocketPeer.STATE_OPEN:
+			continue
+
+		# Read messages
+		while ws.get_available_packet_count() > 0:
+			var packet: PackedByteArray = ws.get_packet()
+			var text: String = packet.get_string_from_utf8()
+			_handle_lobby_ws_message(client, text)
+
+		# Check heartbeat staleness (10 second timeout)
+		var last_hb: float = client["last_hb"]
+		if now - last_hb > 10.0:
+			ws.close()
+			to_remove.append(i)
+
+	# Remove disconnected (reverse order to preserve indices)
+	to_remove.reverse()
+	for idx: int in to_remove:
+		_lobby_ws_clients.remove_at(idx)
+
+	_html_player_count = _lobby_ws_clients.size()
+
+
+func _handle_lobby_ws_message(client: Dictionary, text: String) -> void:
+	var parsed: Variant = JSON.parse_string(text)
+	if not parsed is Dictionary:
+		return
+	var msg: Dictionary = parsed
+	var msg_type: String = msg.get("type", "")
+
+	if msg_type == "join":
+		var name_val: String = msg.get("name", "Player")
+		name_val = name_val.strip_edges().left(20)
+		if name_val.length() < 1:
+			name_val = "Player"
+		client["name"] = name_val
+		client["last_hb"] = Time.get_unix_time_from_system()
+	elif msg_type == "heartbeat":
+		client["last_hb"] = Time.get_unix_time_from_system()
+
+
+func lobby_ws_broadcast(timer: float) -> void:
+	var map_name: String = Config.MAP_NAMES[lobby_map_index] if lobby_map_index < Config.MAP_NAMES.size() else "Unknown"
+	var total_count: int = peer_to_player.size() + _html_player_count
+	var data: Dictionary = {
+		"type": "lobby_update",
+		"player_count": total_count,
+		"timer": timer,
+		"map_name": map_name,
+		"active_games": active_game_count,
+	}
+	var json_str: String = JSON.stringify(data)
+	for client: Dictionary in _lobby_ws_clients:
+		var ws: WebSocketPeer = client["ws"]
+		if ws.get_ready_state() == WebSocketPeer.STATE_OPEN:
+			ws.send_text(json_str)
+
+
+func lobby_ws_send_load_game() -> void:
+	_game_loading_started = true
+	var msg: String = JSON.stringify({"type": "load_game"})
+	for client: Dictionary in _lobby_ws_clients:
+		var ws: WebSocketPeer = client["ws"]
+		if ws.get_ready_state() == WebSocketPeer.STATE_OPEN:
+			ws.send_text(msg)
+	print("Sent load_game to %d HTML lobby clients" % _lobby_ws_clients.size())
+
+
+func get_total_lobby_count() -> int:
+	return peer_to_player.size() + _html_player_count
 
 
 # ---------------------------------------------------------------------------
@@ -150,12 +275,13 @@ func server_assign_player(peer_id: int) -> int:
 
 func server_broadcast_lobby(timer: float) -> void:
 	lobby_timer = timer
-	lobby_player_count = peer_to_player.size()
-	# Only broadcast to peers in the lobby (not in a game)
+	lobby_player_count = peer_to_player.size() + _html_player_count
+	# Only broadcast to Godot peers in the lobby (not in a game)
 	for pid in connected_peers:
 		if not peer_to_game.has(pid):
 			rpc_lobby_update.rpc_id(pid, lobby_player_count, timer, lobby_map_index, lobby_seed)
 	_write_lobby_state_json()
+	lobby_ws_broadcast(timer)
 
 
 func _write_lobby_state_json() -> void:
@@ -209,6 +335,10 @@ func _reset_lobby() -> void:
 	lobby_seed = randi()
 	lobby_started = false
 	lobby_timer = Config.LOBBY_TIMER
+	# Clear HTML lobby clients (they've navigated to /play/)
+	_lobby_ws_clients.clear()
+	_html_player_count = 0
+	_game_loading_started = false
 
 
 func server_start_game_for_lobby() -> Dictionary:
