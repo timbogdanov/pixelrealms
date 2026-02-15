@@ -382,6 +382,21 @@ func _place_mob_spawn_zones(rng: RandomNumberGenerator) -> void:
 			"count": rng.randi_range(3, 5),
 		})
 
+	# 3 bandit zones in mid-outer ring (40-55% from center)
+	for i in 3:
+		var angle: float = (TAU / 3.0) * float(i) + rng.randf_range(-0.3, 0.3)
+		var land_dist: float = _find_land_radius(_center, angle)
+		var dist_frac: float = rng.randf_range(0.40, 0.55)
+		var target_dist: float = maxf(land_dist * dist_frac, 30.0)
+		var target: Vector2 = _center + Vector2(cos(angle), sin(angle)) * target_dist
+		var pos: Vector2 = _find_walkable_near(target, 60)
+		pos = _nudge_mob_from_shops(pos, angle, target_dist, 60)
+		mob_spawn_zones.append({
+			"pos": pos,
+			"type": Config.MobType.BANDIT,
+			"count": rng.randi_range(3, 4),
+		})
+
 	# 2 knight zones near center (20-35% from center, but not on mountain)
 	for i in 2:
 		var angle: float = (TAU / 2.0) * float(i) + rng.randf_range(-0.4, 0.4)

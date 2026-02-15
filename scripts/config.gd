@@ -58,8 +58,8 @@ const PLAYER_SPEED := 35.0   # pixels/sec base speed (upgrade via Swift Feet)
 const PLAYER_MAX_HP := 200.0  # base max HP (upgrade via Vitality)
 const PLAYER_VISION := 35.0  # fog-of-war reveal radius (upgrade via Eagle Eye)
 const PLAYER_START_GOLD := 0
-const PLAYER_RESPAWN_TIME := 5.0
-const PLAYER_RESPAWN_GOLD_PENALTY := 0.5  # lose 50% gold on death
+const PLAYER_RESPAWN_TIME := 3.0
+const PLAYER_RESPAWN_GOLD_PENALTY := 0.3  # lose 30% gold on death
 const PLAYER_KILL_GOLD_STEAL := 0.5       # steal 50% of victim's gold
 
 # --- Equipment ---
@@ -68,8 +68,8 @@ enum EquipSlot { WEAPON, BOW, ARMOR }
 const EQUIPMENT := {
 	# Weapons (melee)
 	"wooden_sword":  { "slot": EquipSlot.WEAPON, "tier": 1, "damage": 25.0, "cost": 0,  "name": "Wooden Sword",  "cooldown": 0.5, "range": 20.0 },
-	"iron_sword":    { "slot": EquipSlot.WEAPON, "tier": 2, "damage": 35.0, "cost": 30, "name": "Iron Sword",    "cooldown": 0.45, "range": 22.0 },
-	"steel_sword":   { "slot": EquipSlot.WEAPON, "tier": 3, "damage": 50.0, "cost": 80, "name": "Steel Sword",   "cooldown": 0.4, "range": 24.0 },
+	"iron_sword":    { "slot": EquipSlot.WEAPON, "tier": 2, "damage": 32.0, "cost": 30, "name": "Iron Sword",    "cooldown": 0.45, "range": 22.0 },
+	"steel_sword":   { "slot": EquipSlot.WEAPON, "tier": 3, "damage": 40.0, "cost": 80, "name": "Steel Sword",   "cooldown": 0.4, "range": 24.0 },
 	# Bows (ranged)
 	"short_bow":     { "slot": EquipSlot.BOW, "tier": 1, "damage": 15.0, "cost": 15, "name": "Short Bow",     "cooldown": 0.8, "range": 100.0, "speed": 200.0 },
 	"long_bow":      { "slot": EquipSlot.BOW, "tier": 2, "damage": 25.0, "cost": 50, "name": "Long Bow",      "cooldown": 0.7, "range": 140.0, "speed": 250.0 },
@@ -89,7 +89,7 @@ const CONSUMABLES := {
 	"shield_potion":  { "name": "Shield Draught",   "cost": 12, "type": "potion",  "subtype": "shield", "max_carry": 3 },
 }
 
-const POTION_HEAL_AMOUNT := 40.0
+const POTION_HEAL_AMOUNT := 30.0
 const SPEED_POTION_MULT := 1.5
 const SPEED_POTION_DURATION := 10.0
 const SHIELD_POTION_DR := 0.30
@@ -101,7 +101,7 @@ const SKILLS := {
 	"regeneration": { "name": "Regeneration",  "desc": "HP/sec regen", "levels": [[12, 0.5],  [35, 1.0],  [70, 2.0]] },
 	"vitality":     { "name": "Vitality",      "desc": "Max HP bonus", "levels": [[10, 20.0], [30, 50.0], [60, 100.0]] },
 	"eagle_eye":    { "name": "Eagle Eye",     "desc": "Vision range", "levels": [[8, 30.0], [18, 60.0], [38, 100.0]] },
-	"gold_rush":    { "name": "Gold Rush",     "desc": "Mob gold +%",  "levels": [[20, 0.25], [50, 0.50], [90, 1.00]] },
+	"gold_rush":    { "name": "Gold Rush",     "desc": "Mob gold +%",  "levels": [[20, 0.15], [50, 0.30], [90, 0.50]] },
 	"quick_draw":   { "name": "Quick Draw",    "desc": "Attack CD -%", "levels": [[15, 0.10], [40, 0.20], [75, 0.35]] },
 }
 
@@ -112,12 +112,13 @@ const ATTACK_COOLDOWN_MULT := 1.0
 const BOT_MELEE_RANGE_MULT := 0.6  # bots must be closer to land melee hits
 
 # --- Mobs ---
-enum MobType { SLIME, SKELETON, KNIGHT }
+enum MobType { SLIME, SKELETON, KNIGHT, BANDIT }
 
 const MOB_STATS := {
-	MobType.SLIME:    { "name": "Slime",    "hp": 15.0,  "damage": 3.0,  "speed": 25.0, "gold": 2,  "aggro_range": 40.0, "attack_range": 12.0, "attack_cooldown": 1.0 },
-	MobType.SKELETON: { "name": "Skeleton", "hp": 35.0,  "damage": 6.0,  "speed": 35.0, "gold": 5,  "aggro_range": 60.0, "attack_range": 14.0, "attack_cooldown": 0.8 },
-	MobType.KNIGHT:   { "name": "Knight",   "hp": 80.0,  "damage": 12.0, "speed": 30.0, "gold": 12, "aggro_range": 70.0, "attack_range": 16.0, "attack_cooldown": 0.7 },
+	MobType.SLIME:    { "name": "Slime",    "hp": 15.0,  "damage": 3.0,  "speed": 25.0, "gold": 1,  "aggro_range": 40.0, "attack_range": 12.0, "attack_cooldown": 1.0 },
+	MobType.SKELETON: { "name": "Skeleton", "hp": 35.0,  "damage": 6.0,  "speed": 35.0, "gold": 4,  "aggro_range": 60.0, "attack_range": 14.0, "attack_cooldown": 0.8 },
+	MobType.KNIGHT:   { "name": "Knight",   "hp": 80.0,  "damage": 12.0, "speed": 30.0, "gold": 10, "aggro_range": 70.0, "attack_range": 16.0, "attack_cooldown": 0.7 },
+	MobType.BANDIT:   { "name": "Bandit",   "hp": 50.0,  "damage": 8.0,  "speed": 40.0, "gold": 8,  "aggro_range": 65.0, "attack_range": 14.0, "attack_cooldown": 0.7 },
 }
 const MOB_RESPAWN_TIME := 15.0  # seconds
 const MOB_WANDER_RADIUS := 40.0
@@ -126,7 +127,7 @@ const MOB_LEASH_RADIUS := 80.0  # return to spawn if too far
 # --- King of the Hill ---
 const HILL_RADIUS := 30.0           # pixels, capture zone radius
 const HILL_CAPTURE_TIME := 10.0     # seconds to capture
-const HILL_HOLD_TIME := 60.0        # seconds to win after capture
+const HILL_HOLD_TIME := 45.0        # seconds to win after capture
 const HILL_ACTIVATE_TIME := 300.0   # 5 minutes before Hill activates
 const MOUNTAIN_STONE_RADIUS := 25.0   # STONE peak radius in pixels
 const MOUNTAIN_TOTAL_RADIUS := 90.0   # Total mountain radius (STONE + HILL slopes)
@@ -139,6 +140,24 @@ const SHOP_MIN_DIST_FROM_HILL := 150.0
 const SHOP_MIN_DIST_APART := 100.0
 const MOB_MIN_DIST_FROM_SHOP := 60.0
 const PLAYER_SPAWN_MIN_DIST_FROM_SHOP := 30.0
+
+# --- Pickups ---
+enum PickupType { GOLD, HEALTH_POTION }
+const PICKUP_DESPAWN_TIME := 15.0
+const PICKUP_COLLECT_RADIUS := 8.0
+const DEATH_GOLD_DROP_FRACTION := 0.25
+const RARE_DROP_GOLD_CHANCE := 0.05
+const RARE_DROP_GOLD_MULT_MIN := 2.0
+const RARE_DROP_GOLD_MULT_MAX := 3.0
+const RARE_DROP_POTION_CHANCE := 0.03
+
+# --- Bounty ---
+const BOUNTY_KILL_STREAK := 3
+const BOUNTY_GOLD_THRESHOLD := 50
+const BOUNTY_PULSE_INTERVAL := 12.0
+const BOUNTY_PULSE_DURATION := 1.5
+const BOUNTY_KILL_BONUS_PER_STREAK := 5
+const BOUNTY_GOLD_BONUS_FRACTION := 0.10
 
 # --- Fog of War ---
 const FOG_COLOR := Color(0, 0, 0, 0.85)

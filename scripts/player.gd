@@ -49,6 +49,12 @@ var is_attacking: bool = false
 var attack_timer: float = 0.0  # visual swing duration
 
 # ---------------------------------------------------------------------------
+# Bounty
+# ---------------------------------------------------------------------------
+var kill_streak: int = 0
+var has_bounty: bool = false
+
+# ---------------------------------------------------------------------------
 # Movement
 # ---------------------------------------------------------------------------
 var velocity: Vector2 = Vector2.ZERO
@@ -97,6 +103,10 @@ func init(id: int, pos: Vector2, color: Color, human: bool) -> void:
 	facing_dir = Vector2.RIGHT
 	is_attacking = false
 	attack_timer = 0.0
+
+	# Reset bounty
+	kill_streak = 0
+	has_bounty = false
 
 	# Reset movement
 	velocity = Vector2.ZERO
@@ -268,7 +278,13 @@ func die() -> void:
 	velocity = Vector2.ZERO
 	is_attacking = false
 	attack_timer = 0.0
+	kill_streak = 0
+	has_bounty = false
 	died.emit(self)
+
+
+func update_bounty() -> void:
+	has_bounty = kill_streak >= Config.BOUNTY_KILL_STREAK or gold >= Config.BOUNTY_GOLD_THRESHOLD
 
 
 func respawn(pos: Vector2) -> void:
@@ -349,7 +365,7 @@ func get_damage_reduction() -> float:
 		dr = armor_info.get("dr", 0.0)
 	if shield_buff_timer > 0.0:
 		dr += Config.SHIELD_POTION_DR
-	return minf(dr, 0.90)  # cap at 90%
+	return minf(dr, 0.50)  # cap at 50%
 
 
 func get_weapon_stats() -> Dictionary:

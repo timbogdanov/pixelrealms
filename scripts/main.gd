@@ -14,6 +14,7 @@ var _mobs: Array = []
 var _projectiles: Array = []
 var _particles: Array = []
 var _shops: Array = []
+var _client_pickups: Array = []
 var _hill: Hill
 var _bot_ais: Array = []
 
@@ -50,6 +51,7 @@ var _shop_flash_timer: float = 0.0
 var _shop_flash_idx: int = -1
 var _gold_floats: Array = []  # [{x, y, amount, timer, max_timer}]
 var _turret_beams: Array = []  # [{from_x, from_y, to_x, to_y, timer}]
+var _bounty_pulses: Array = []  # [{x, y, timer, max_timer}]
 
 # ---------------------------------------------------------------------------
 # Mob tracking (client)
@@ -273,6 +275,7 @@ func _process(delta: float) -> void:
 	_tick_gold_floats(delta)
 	_tick_turret_beams(delta)
 	_tick_particles(delta)
+	_process_bounty_pulse_timers(delta)
 	if _shop_flash_timer > 0.0:
 		_shop_flash_timer -= delta
 		if _shop_flash_timer < 0.0:
@@ -439,6 +442,13 @@ func _draw_entities() -> void:
 	for player in _players:
 		_draw_player(player)
 
+	# Draw pickups
+	for pk: Dictionary in _client_pickups:
+		_draw_pickup(pk)
+
+	# Draw bounty pulses (expanding rings visible through fog)
+	_draw_bounty_pulses()
+
 	_draw_particles()
 	_draw_turret_beams()
 
@@ -517,6 +527,8 @@ func _draw_mob(mob: Mob) -> void:
 			mob_color = Color(0.85, 0.85, 0.8)
 		Config.MobType.KNIGHT:
 			mob_color = Color(0.55, 0.45, 0.55)
+		Config.MobType.BANDIT:
+			mob_color = Color(0.75, 0.55, 0.25)
 		_:
 			mob_color = Color(0.8, 0.3, 0.3)
 
@@ -562,6 +574,12 @@ func _draw_player(player: Player) -> void:
 	if hp_frac > 0.0:
 		_entity_node.draw_rect(Rect2(cx - 3.0, bar_y, bar_w * hp_frac, 1.0), Color(0.2, 0.9, 0.2))
 
+	# Bounty ring (pulsing red/gold)
+	if player.has_bounty:
+		var bounty_pulse: float = 0.5 + sin(_game_time * 4.0) * 0.3
+		var bounty_color := Color(1.0, 0.3, 0.1, bounty_pulse)
+		_draw_circle_outline(cx, cy, 6.0, bounty_color)
+
 	# Attack visual (melee swing arc)
 	if player.is_attacking and player.active_slot == 0:
 		var swing_len: float = 4.0
@@ -593,6 +611,45 @@ func _draw_circle_outline(cx: float, cy: float, r: float, color: Color) -> void:
 		else:
 			x -= 1
 			d += 2 * (y - x) + 1
+
+
+func _draw_pickup(pk: Dictionary) -> void:
+	var cx: float = pk["x"]
+	var cy: float = pk["y"]
+	var pk_type: int = pk["type"]
+	var pulse: float = 0.7 + sin(_game_time * 6.0) * 0.3
+	match pk_type:
+		Config.PickupType.GOLD:
+			var gold_color := Color(1.0, 0.85, 0.2, pulse)
+			_entity_node.draw_rect(Rect2(cx - 2.0, cy - 2.0, 4.0, 4.0), gold_color)
+			# Glow ring
+			var glow_color := Color(1.0, 0.9, 0.3, pulse * 0.3)
+			_draw_circle_outline(cx, cy, 5.0, glow_color)
+		Config.PickupType.HEALTH_POTION:
+			var potion_color := Color(0.9, 0.2, 0.2, pulse)
+			_entity_node.draw_rect(Rect2(cx - 2.0, cy - 2.0, 4.0, 4.0), potion_color)
+			var glow_color := Color(1.0, 0.3, 0.3, pulse * 0.3)
+			_draw_circle_outline(cx, cy, 5.0, glow_color)
+
+
+func _draw_bounty_pulses() -> void:
+	var to_remove: Array = []
+	for i in range(_bounty_pulses.size()):
+		var bp: Dictionary = _bounty_pulses[i]
+		var frac: float = 1.0 - bp["timer"] / bp["max_timer"]
+		var radius: float = 8.0 + frac * 40.0
+		var alpha: float = (1.0 - frac) * 0.6
+		var color := Color(1.0, 0.3, 0.1, alpha)
+		_draw_circle_outline(bp["x"], bp["y"], radius, color)
+		if bp["timer"] <= 0.0:
+			to_remove.append(i)
+	for j in range(to_remove.size() - 1, -1, -1):
+		_bounty_pulses.remove_at(to_remove[j])
+
+
+func _process_bounty_pulse_timers(delta: float) -> void:
+	for bp in _bounty_pulses:
+		bp["timer"] -= delta
 
 
 # ===========================================================================
@@ -778,6 +835,7 @@ func _draw_hud() -> void:
 		if not near_shop:
 			_draw_shop_arrows(vp)
 			_draw_hill_arrow(vp)
+		_draw_bounty_arrows(vp)
 
 	# --- Shop panel ---
 	if _shop_open and _shop_ref != null:
@@ -1658,6 +1716,40 @@ func _draw_hill_arrow(vp: Vector2) -> void:
 		dist_text, HORIZONTAL_ALIGNMENT_LEFT, -1, 9, arrow_color)
 
 
+func _draw_bounty_arrows(vp: Vector2) -> void:
+	if _human == null or not _human.alive:
+		return
+	var center: Vector2 = vp * 0.5
+	var margin: float = 30.0
+	var vision: float = Config.PLAYER_VISION + _human.get_vision_bonus()
+	var arrow_color := Color(1.0, 0.3, 0.1, 0.7)
+
+	for player in _players:
+		if player == _human or not player.alive or not player.has_bounty:
+			continue
+		var dir: Vector2 = player.position - _human.position
+		var dist: float = dir.length()
+		if dist < vision:
+			continue
+		if dist < 1.0:
+			continue
+		dir = dir.normalized()
+
+		var ax: float = center.x + dir.x * (center.x - margin)
+		var ay: float = center.y + dir.y * (center.y - margin)
+		ax = clampf(ax, margin, vp.x - margin)
+		ay = clampf(ay, margin, vp.y - margin)
+
+		var perp: Vector2 = Vector2(-dir.y, dir.x)
+		var tip: Vector2 = Vector2(ax, ay) + dir * 6.0
+		var base_l: Vector2 = Vector2(ax, ay) - dir * 4.0 + perp * 4.0
+		var base_r: Vector2 = Vector2(ax, ay) - dir * 4.0 - perp * 4.0
+		_hud_node.draw_colored_polygon(PackedVector2Array([tip, base_l, base_r]), arrow_color)
+
+		_hud_node.draw_string(ThemeDB.fallback_font, Vector2(ax - 8, ay + 16),
+			"BOUNTY", HORIZONTAL_ALIGNMENT_LEFT, -1, 8, arrow_color)
+
+
 # ===========================================================================
 # Messages
 # ===========================================================================
@@ -1864,6 +1956,8 @@ func _on_returned_to_lobby() -> void:
 	_gold_floats.clear()
 	_turret_beams.clear()
 	_particles.clear()
+	_client_pickups.clear()
+	_bounty_pulses.clear()
 	if _fog_sprite != null:
 		_fog_sprite.queue_free()
 		_fog_sprite = null
@@ -1929,6 +2023,8 @@ func _apply_snapshot(data: PackedByteArray) -> void:
 		player.speed_buff_timer = pd.get("spd_t", 0.0)
 		player.shield_buff_timer = pd.get("shd_t", 0.0)
 		player.skills = pd.get("skills", {})
+		player.kill_streak = pd.get("ks", 0)
+		player.has_bounty = pd.get("bounty", false)
 
 	# Update mobs — reconcile with existing mob objects
 	var mob_data: Array = snapshot.get("m", [])
@@ -1987,6 +2083,18 @@ func _apply_snapshot(data: PackedByteArray) -> void:
 	_hill.capture_progress = hill_data.get("cprog", 0.0)
 	_hill.holding_player = hill_data.get("hp", -1)
 	_hill.hold_timer = hill_data.get("ht", 0.0)
+
+	# Update pickups
+	_client_pickups.clear()
+	var pickup_data: Array = snapshot.get("pk", [])
+	for pkd: Dictionary in pickup_data:
+		_client_pickups.append({
+			"id": pkd.get("pid", 0),
+			"type": pkd.get("type", 0),
+			"x": pkd.get("x", 0.0),
+			"y": pkd.get("y", 0.0),
+			"amount": pkd.get("amt", 0),
+		})
 
 
 # ===========================================================================
@@ -2095,6 +2203,8 @@ func _handle_game_event(event_data: PackedByteArray) -> void:
 					mob_color = Color(0.85, 0.85, 0.8)
 				Config.MobType.KNIGHT:
 					mob_color = Color(0.55, 0.45, 0.55)
+				Config.MobType.BANDIT:
+					mob_color = Color(0.75, 0.55, 0.25)
 				_:
 					mob_color = Color(0.8, 0.3, 0.3)
 			_spawn_particles(pos, randi_range(8, 12), mob_color, 25.0, 0.5)
@@ -2111,6 +2221,25 @@ func _handle_game_event(event_data: PackedByteArray) -> void:
 		"hit":
 			var pos := Vector2(event.get("x", 0.0), event.get("y", 0.0))
 			_spawn_particles(pos, randi_range(5, 8), Color(1.0, 0.95, 0.7), 30.0, 0.3)
+		"rare_drop":
+			var pos := Vector2(event.get("x", 0.0), event.get("y", 0.0))
+			var drop_type: int = event.get("drop_type", 0)
+			if drop_type == Config.PickupType.GOLD:
+				_spawn_particles(pos, 12, Color(1.0, 0.85, 0.2), 20.0, 0.8, 2.0)
+			else:
+				_spawn_particles(pos, 10, Color(0.9, 0.2, 0.2), 20.0, 0.8, 2.0)
+		"pickup_collected":
+			var pos := Vector2(event.get("x", 0.0), event.get("y", 0.0))
+			_spawn_particles(pos, 6, Color(1.0, 0.85, 0.2), 15.0, 0.4)
+		"bounty_pulse":
+			var bx: float = event.get("x", 0.0)
+			var by: float = event.get("y", 0.0)
+			_bounty_pulses.append({"x": bx, "y": by, "timer": Config.BOUNTY_PULSE_DURATION, "max_timer": Config.BOUNTY_PULSE_DURATION})
+		"bounty_claimed":
+			var pos := Vector2(event.get("x", 0.0), event.get("y", 0.0))
+			var bonus: int = event.get("bonus", 0)
+			_spawn_particles(pos, 15, Color(1.0, 0.4, 0.1), 30.0, 0.8, 2.0)
+			_show_message("Bounty claimed! +%d gold" % bonus, Color(1.0, 0.4, 0.1), 3.0)
 		"game_over":
 			var winner: int = event.get("winner_id", -1)
 			_winner_id = winner

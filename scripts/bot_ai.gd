@@ -17,7 +17,7 @@ func init(personality_type: int) -> void:
 	decision_timer = 0.0
 
 func update(delta: float, player: Player, all_players: Array, mobs: Array,
-			shops: Array, hill: Hill, map: Node2D) -> Dictionary:
+			shops: Array, hill: Hill, map: Node2D, projectiles: Array = []) -> Dictionary:
 	## Returns {move_dir: Vector2, attack_target: Vector2, try_buy: bool, switch_weapon: int}
 	var result := {
 		"move_dir": Vector2.ZERO,
@@ -44,6 +44,11 @@ func update(delta: float, player: Player, all_players: Array, mobs: Array,
 			result = _do_fighting(player, all_players, shops)
 		State.CONTESTING:
 			result = _do_contesting(player, hill)
+
+	# Dodge incoming projectiles (override movement if needed)
+	var dodge_dir: Vector2 = _check_dodge(player, projectiles)
+	if dodge_dir != Vector2.ZERO:
+		result["move_dir"] = dodge_dir
 
 	return result
 
@@ -163,9 +168,9 @@ func _do_fighting(player: Player, all_players: Array, shops: Array) -> Dictionar
 	var result := {"move_dir": Vector2.ZERO, "attack_target": Vector2.ZERO,
 				   "try_buy": false, "attack": false, "switch_weapon": 0}
 
-	# Find nearest enemy
-	var nearest: Player = null
-	var nearest_dist := 999.0
+	# Score-based target selection
+	var best_target: Player = null
+	var best_score: float = -999.0
 	for other in all_players:
 		if not is_instance_valid(other) or not other.alive or other.player_id == player.player_id:
 			continue
@@ -177,22 +182,32 @@ func _do_fighting(player: Player, all_players: Array, shops: Array) -> Dictionar
 				break
 		if in_safe_zone:
 			continue
-		var d := player.position.distance_to(other.position)
-		if d < nearest_dist:
-			nearest_dist = d
-			nearest = other
+		var d: float = player.position.distance_to(other.position)
+		if d > 150.0:
+			continue
+		# Score: prefer low HP, prefer bounty, prefer closer, avoid heavily geared
+		var score: float = 0.0
+		score -= d * 0.5  # closer is better
+		score += (1.0 - other.hp / other.max_hp) * 40.0  # low HP bonus
+		if other.has_bounty:
+			score += 60.0  # bounty bonus
+		score -= float(_get_gear_score(other)) * 5.0  # avoid geared players
+		if score > best_score:
+			best_score = score
+			best_target = other
 
-	if nearest != null:
-		if player.bow != "" and player.arrows > 0 and nearest_dist > 30.0 and nearest_dist <= 120.0:
+	if best_target != null:
+		var target_dist: float = player.position.distance_to(best_target.position)
+		if player.bow != "" and player.arrows > 0 and target_dist > 30.0 and target_dist <= 120.0:
 			result["switch_weapon"] = 1
 			result["attack"] = true
-			result["attack_target"] = nearest.position
-		elif nearest_dist <= 20.0:
+			result["attack_target"] = best_target.position
+		elif target_dist <= 20.0:
 			result["switch_weapon"] = 0
 			result["attack"] = true
-			result["attack_target"] = nearest.position
+			result["attack_target"] = best_target.position
 		else:
-			result["move_dir"] = (nearest.position - player.position).normalized()
+			result["move_dir"] = (best_target.position - player.position).normalized()
 
 	return result
 
@@ -222,3 +237,25 @@ func _get_gear_score(player: Player) -> int:
 	for skill_id: String in Config.SKILLS:
 		score += player.get_skill_level(skill_id)
 	return score
+
+
+func _check_dodge(player: Player, projectiles: Array) -> Vector2:
+	for proj in projectiles:
+		if not is_instance_valid(proj) or not proj.alive:
+			continue
+		if proj.owner_id == player.player_id:
+			continue
+		var to_player: Vector2 = player.position - proj.position
+		var dist: float = to_player.length()
+		if dist > 80.0 or dist < 1.0:
+			continue
+		# Check if projectile is heading toward us
+		var dot: float = proj.direction.dot(to_player.normalized())
+		if dot > 0.5:
+			# Dodge perpendicular to projectile direction
+			var perp := Vector2(-proj.direction.y, proj.direction.x)
+			# Pick a consistent side based on player position
+			if to_player.dot(perp) < 0.0:
+				perp = -perp
+			return perp.normalized()
+	return Vector2.ZERO

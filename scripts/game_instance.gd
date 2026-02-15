@@ -28,6 +28,9 @@ var _bot_ais: Array = []
 var _dead_mob_queue: Array = []
 var _next_mob_id: int = 0
 var _mob_by_id: Dictionary = {}
+var _pickups: Array = []
+var _next_pickup_id: int = 0
+var _bounty_pulse_timers: Dictionary = {}
 
 # Peer tracking (peers in THIS game)
 var _game_peers: Dictionary = {}   # peer_id -> player_index
@@ -116,6 +119,12 @@ func process_tick(delta: float) -> void:
 
 	# 6. Projectiles
 	_process_projectiles(delta)
+
+	# 6.5. Pickups
+	_process_pickups(delta)
+
+	# 6.6. Bounty pulses
+	_process_bounty_pulses(delta)
 
 	# 7. Hill
 	_hill.process_hill(delta, _players)
@@ -218,6 +227,14 @@ func _get_bot_indices() -> Array[int]:
 	return bots
 
 
+func _spawn_pickup(type: int, pos: Vector2, amount: int) -> void:
+	var pickup := Pickup.new()
+	pickup.init(_next_pickup_id, type, pos, amount)
+	_next_pickup_id += 1
+	_pickups.append(pickup)
+	add_child(pickup)
+
+
 func _spawn_mobs() -> void:
 	for zone in _map_gen.mob_spawn_zones:
 		var zone_pos: Vector2 = zone["pos"]
@@ -252,7 +269,7 @@ func _process_bots(delta: float) -> void:
 		var player: Player = _players[player_idx]
 		if not player.alive:
 			continue
-		var result: Dictionary = bot.update(delta, player, _players, _mobs, _shops, _hill, _map_gen)
+		var result: Dictionary = bot.update(delta, player, _players, _mobs, _shops, _hill, _map_gen, _projectiles)
 		_apply_bot_action(player, result)
 
 
@@ -286,6 +303,15 @@ func _apply_bot_action(player: Player, action: Dictionary) -> void:
 					player.use_speed_potion()
 				break
 
+	# Bot uses shield potion when fighting or contesting
+	if player.shield_buff_timer <= 0.0 and player.shield_potions > 0:
+		for bot_entry in _bot_ais:
+			if bot_entry["player_idx"] == player.player_id:
+				var bot_state: int = bot_entry["ai"].state
+				if bot_state == BotAI.State.FIGHTING or bot_state == BotAI.State.CONTESTING:
+					player.use_shield_potion()
+				break
+
 	# Shopping
 	var try_buy: bool = action.get("try_buy", false)
 	if try_buy:
@@ -312,6 +338,10 @@ func _bot_try_buy(player: Player) -> void:
 		# Priority 2: Buy health potions if can carry
 		if player.health_potions < 3 and player.gold >= 8:
 			player.buy_consumable("health_potion")
+
+		# Priority 2.5: Buy shield potions if can carry
+		if player.shield_potions < 2 and player.gold >= 12:
+			player.buy_consumable("shield_potion")
 
 		# Priority 3: Equipment upgrades
 		var equip_items: Array = shop.get_equipment_list()
@@ -435,11 +465,26 @@ func _resolve_melee(attack: Dictionary, attacker_id: int) -> void:
 			target.apply_knockback(direction, Config.KNOCKBACK_FORCE)
 			if not target.alive:
 				var stolen: int = int(target.gold * Config.PLAYER_KILL_GOLD_STEAL)
+				# Bounty bonus
+				if target.has_bounty:
+					var bounty_bonus: int = target.kill_streak * Config.BOUNTY_KILL_BONUS_PER_STREAK + int(float(target.gold) * Config.BOUNTY_GOLD_BONUS_FRACTION)
+					stolen += bounty_bonus
+					_broadcast_game_event({"type": "bounty_claimed",
+						"killer_id": attacker_id, "victim_id": target.player_id,
+						"bonus": bounty_bonus,
+						"x": target.position.x, "y": target.position.y})
 				attacker.add_gold(stolen)
+				attacker.kill_streak += 1
+				attacker.update_bounty()
 				_broadcast_game_event({"type": "player_killed",
 					"victim_id": target.player_id, "killer_id": attacker_id,
 					"gold_stolen": stolen,
 					"x": target.position.x, "y": target.position.y})
+				# Gold drop pickup
+				var gold_lost: int = target.gold - int(float(target.gold) * (1.0 - Config.PLAYER_RESPAWN_GOLD_PENALTY))
+				var drop_amount: int = int(float(gold_lost) * Config.DEATH_GOLD_DROP_FRACTION)
+				if drop_amount > 0:
+					_spawn_pickup(Config.PickupType.GOLD, target.position, drop_amount)
 
 	# Check against mobs
 	for mob in _mobs:
@@ -505,11 +550,26 @@ func _process_projectiles(delta: float) -> void:
 						for attacker in _players:
 							if attacker.player_id == proj.owner_id:
 								var stolen: int = int(player.gold * Config.PLAYER_KILL_GOLD_STEAL)
+								# Bounty bonus
+								if player.has_bounty:
+									var bounty_bonus: int = player.kill_streak * Config.BOUNTY_KILL_BONUS_PER_STREAK + int(float(player.gold) * Config.BOUNTY_GOLD_BONUS_FRACTION)
+									stolen += bounty_bonus
+									_broadcast_game_event({"type": "bounty_claimed",
+										"killer_id": attacker.player_id, "victim_id": player.player_id,
+										"bonus": bounty_bonus,
+										"x": player.position.x, "y": player.position.y})
 								attacker.add_gold(stolen)
+								attacker.kill_streak += 1
+								attacker.update_bounty()
 								_broadcast_game_event({"type": "player_killed",
 									"victim_id": player.player_id, "killer_id": proj.owner_id,
 									"gold_stolen": stolen,
 									"x": player.position.x, "y": player.position.y})
+								# Gold drop pickup
+								var gold_lost: int = player.gold - int(float(player.gold) * (1.0 - Config.PLAYER_RESPAWN_GOLD_PENALTY))
+								var drop_amount: int = int(float(gold_lost) * Config.DEATH_GOLD_DROP_FRACTION)
+								if drop_amount > 0:
+									_spawn_pickup(Config.PickupType.GOLD, player.position, drop_amount)
 								break
 					break
 
@@ -531,6 +591,60 @@ func _process_projectiles(delta: float) -> void:
 			proj.queue_free()
 
 		i -= 1
+
+
+func _process_pickups(delta: float) -> void:
+	var to_remove: Array = []
+	for pickup in _pickups:
+		pickup.process_pickup(delta)
+		if not pickup.alive:
+			to_remove.append(pickup)
+			continue
+		for player in _players:
+			if not player.alive:
+				continue
+			if player.position.distance_to(pickup.position) <= Config.PICKUP_COLLECT_RADIUS:
+				_collect_pickup(player, pickup)
+				to_remove.append(pickup)
+				break
+	for pickup in to_remove:
+		_pickups.erase(pickup)
+		pickup.queue_free()
+
+
+func _collect_pickup(player: Player, pickup: Pickup) -> void:
+	match pickup.pickup_type:
+		Config.PickupType.GOLD:
+			player.add_gold(pickup.amount)
+			_broadcast_game_event({"type": "pickup_collected",
+				"pickup_type": Config.PickupType.GOLD,
+				"amount": pickup.amount,
+				"collector_id": player.player_id,
+				"x": pickup.position.x, "y": pickup.position.y})
+		Config.PickupType.HEALTH_POTION:
+			var max_carry: int = 5
+			if player.health_potions < max_carry:
+				player.health_potions += pickup.amount
+				_broadcast_game_event({"type": "pickup_collected",
+					"pickup_type": Config.PickupType.HEALTH_POTION,
+					"amount": pickup.amount,
+					"collector_id": player.player_id,
+					"x": pickup.position.x, "y": pickup.position.y})
+
+
+func _process_bounty_pulses(delta: float) -> void:
+	for player in _players:
+		if not player.alive or not player.has_bounty:
+			_bounty_pulse_timers.erase(player.player_id)
+			continue
+		var timer: float = _bounty_pulse_timers.get(player.player_id, 0.0)
+		timer -= delta
+		if timer <= 0.0:
+			timer = Config.BOUNTY_PULSE_INTERVAL
+			_broadcast_game_event({"type": "bounty_pulse",
+				"player_id": player.player_id,
+				"x": player.position.x, "y": player.position.y})
+		_bounty_pulse_timers[player.player_id] = timer
 
 
 # ===========================================================================
@@ -556,6 +670,19 @@ func _on_mob_died(mob: Mob) -> void:
 	_broadcast_game_event({"type": "mob_killed",
 		"x": mob.position.x, "y": mob.position.y,
 		"mob_type": mob.mob_type, "gold": gold_amount})
+
+	# Rare drops
+	var drop_rng: float = randf()
+	if drop_rng < Config.RARE_DROP_GOLD_CHANCE:
+		var mult: float = randf_range(Config.RARE_DROP_GOLD_MULT_MIN, Config.RARE_DROP_GOLD_MULT_MAX)
+		var bonus_gold: int = int(float(mob.gold_reward) * mult)
+		_spawn_pickup(Config.PickupType.GOLD, mob.position, bonus_gold)
+		_broadcast_game_event({"type": "rare_drop", "x": mob.position.x, "y": mob.position.y,
+			"drop_type": Config.PickupType.GOLD, "amount": bonus_gold})
+	elif drop_rng < Config.RARE_DROP_GOLD_CHANCE + Config.RARE_DROP_POTION_CHANCE:
+		_spawn_pickup(Config.PickupType.HEALTH_POTION, mob.position, 1)
+		_broadcast_game_event({"type": "rare_drop", "x": mob.position.x, "y": mob.position.y,
+			"drop_type": Config.PickupType.HEALTH_POTION, "amount": 1})
 
 	_dead_mob_queue.append({
 		"type": mob.mob_type,
@@ -781,6 +908,8 @@ func _broadcast_snapshot() -> void:
 			"spd_t": player.speed_buff_timer,
 			"shd_t": player.shield_buff_timer,
 			"skills": player.skills.duplicate(),
+			"ks": player.kill_streak,
+			"bounty": player.has_bounty,
 		})
 
 	var mob_data: Array = []
@@ -806,11 +935,23 @@ func _broadcast_snapshot() -> void:
 				"oid": proj.owner_id,
 			})
 
+	var pickup_data: Array = []
+	for pickup in _pickups:
+		if pickup.alive:
+			pickup_data.append({
+				"pid": pickup.pickup_id,
+				"type": pickup.pickup_type,
+				"x": pickup.position.x,
+				"y": pickup.position.y,
+				"amt": pickup.amount,
+			})
+
 	var snapshot: Dictionary = {
 		"t": _game_time,
 		"p": player_data,
 		"m": mob_data,
 		"pr": proj_data,
+		"pk": pickup_data,
 		"h": {
 			"a": _hill.active,
 			"gt": _hill.game_timer,
@@ -851,6 +992,10 @@ func cleanup() -> void:
 	for proj in _projectiles:
 		proj.queue_free()
 	_projectiles.clear()
+	for pickup in _pickups:
+		pickup.queue_free()
+	_pickups.clear()
+	_next_pickup_id = 0
 	for shop in _shops:
 		shop.queue_free()
 	_shops.clear()
