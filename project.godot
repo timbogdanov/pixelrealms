@@ -13,6 +13,8 @@ config_version=5
 config/name="Pixel Realms"
 run/main_scene="res://scenes/main.tscn"
 config/features=PackedStringArray("4.6")
+boot_splash/bg_color=Color(0.055, 0.059, 0.051, 1)
+boot_splash/show_image=false
 
 [autoload]
 
