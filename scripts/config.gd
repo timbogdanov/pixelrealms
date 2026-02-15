@@ -26,7 +26,7 @@ const TERRAIN_SPEED := {
 	Terrain.GRASS: 1.0,
 	Terrain.FOREST: 0.6,
 	Terrain.HILL: 0.7,
-	Terrain.STONE: 0.5,
+	Terrain.STONE: 0.4,
 	Terrain.PATH: 1.2,
 }
 
@@ -128,11 +128,17 @@ const HILL_RADIUS := 30.0           # pixels, capture zone radius
 const HILL_CAPTURE_TIME := 10.0     # seconds to capture
 const HILL_HOLD_TIME := 60.0        # seconds to win after capture
 const HILL_ACTIVATE_TIME := 300.0   # 5 minutes before Hill activates
+const MOUNTAIN_STONE_RADIUS := 25.0   # STONE peak radius in pixels
+const MOUNTAIN_TOTAL_RADIUS := 90.0   # Total mountain radius (STONE + HILL slopes)
 
 # --- Shops ---
 const SHOP_INTERACT_RADIUS := 25.0
 const SHOP_SAFE_RADIUS := 35.0    # safe zone radius (slightly larger than interact)
 const SAFE_ZONE_REGEN := 5.0     # HP/sec while in safe zone
+const SHOP_MIN_DIST_FROM_HILL := 150.0
+const SHOP_MIN_DIST_APART := 100.0
+const MOB_MIN_DIST_FROM_SHOP := 60.0
+const PLAYER_SPAWN_MIN_DIST_FROM_SHOP := 30.0
 
 # --- Fog of War ---
 const FOG_COLOR := Color(0, 0, 0, 0.85)

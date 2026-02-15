@@ -160,8 +160,6 @@ func generate(seed_val: int = 42, map_index: int = 0) -> void:
 	lake_noise.frequency = 0.015
 	lake_noise.fractal_octaves = 2
 
-	var hill_radius: float = Config.HILL_RADIUS
-
 	# --- Pass 1: Generate base terrain using country shape ---
 	for y in _height:
 		for x in _width:
@@ -206,13 +204,20 @@ func generate(seed_val: int = 42, map_index: int = 0) -> void:
 			var forest_val: float = forest_noise.get_noise_2d(x, y)
 			var variation: float = color_noise.get_noise_2d(x * 3.0, y * 3.0) * 0.04
 
-			# Hill zone: forced HILL terrain near center
+			# Mountain zone: STONE peak + HILL slopes around center
 			var dist_to_center: float = Vector2(x, y).distance_to(_center)
-			if dist_to_center <= hill_radius:
-				terrain[idx] = Config.Terrain.HILL
-				var center_blend: float = 1.0 - (dist_to_center / hill_radius)
-				var color: Color = HILL_COLOR.lightened(center_blend * 0.15 + variation)
-				_terrain_image.set_pixel(x, y, color)
+			if dist_to_center <= Config.MOUNTAIN_TOTAL_RADIUS:
+				if dist_to_center <= Config.MOUNTAIN_STONE_RADIUS:
+					terrain[idx] = Config.Terrain.STONE
+					var center_blend: float = 1.0 - (dist_to_center / Config.MOUNTAIN_STONE_RADIUS)
+					var color: Color = Config.TERRAIN_COLORS[Config.Terrain.STONE]
+					color = color.lightened(center_blend * 0.12 + variation)
+					_terrain_image.set_pixel(x, y, color)
+				else:
+					terrain[idx] = Config.Terrain.HILL
+					var slope_frac: float = (dist_to_center - Config.MOUNTAIN_STONE_RADIUS) / (Config.MOUNTAIN_TOTAL_RADIUS - Config.MOUNTAIN_STONE_RADIUS)
+					var color: Color = HILL_COLOR.lightened((1.0 - slope_frac) * 0.15 + variation)
+					_terrain_image.set_pixel(x, y, color)
 				continue
 
 			# Elevation-based terrain assignment
@@ -235,7 +240,7 @@ func generate(seed_val: int = 42, map_index: int = 0) -> void:
 	_generate_rivers(rng)
 
 	# --- Place key locations ---
-	hill_position = _find_walkable_near(_center, 30)
+	hill_position = _center
 	_place_shops(rng)
 	_place_spawns(rng)
 
@@ -257,7 +262,7 @@ func generate(seed_val: int = 42, map_index: int = 0) -> void:
 
 func is_walkable(pos: Vector2i) -> bool:
 	var t: int = get_terrain_at(pos)
-	return t != Config.Terrain.STONE
+	return t != Config.Terrain.WATER and t != Config.Terrain.SHALLOW_WATER
 
 
 func get_terrain(pos: Vector2) -> int:
@@ -286,9 +291,25 @@ func _place_shops(rng: RandomNumberGenerator) -> void:
 	for i in 3:
 		var angle: float = base_angle + (TAU / 3.0) * float(i)
 		var land_dist: float = _find_land_radius(_center, angle)
-		var target_dist: float = maxf(land_dist * 0.6, 30.0)
+		var target_dist: float = maxf(land_dist * 0.6, Config.SHOP_MIN_DIST_FROM_HILL)
 		var target: Vector2 = _center + Vector2(cos(angle), sin(angle)) * target_dist
-		var snapped: Vector2 = _find_walkable_near(target, 80)
+		var snapped: Vector2 = _find_grass_or_path_near(target, 80)
+
+		# Validate minimum distance from other shops
+		var attempts: int = 0
+		while attempts < 5:
+			var too_close: bool = false
+			for existing in shop_positions:
+				if snapped.distance_to(existing) < Config.SHOP_MIN_DIST_APART:
+					too_close = true
+					break
+			if not too_close:
+				break
+			attempts += 1
+			target_dist += 30.0
+			target = _center + Vector2(cos(angle), sin(angle)) * target_dist
+			snapped = _find_grass_or_path_near(target, 80)
+
 		shop_positions.append(snapped)
 
 
@@ -305,7 +326,23 @@ func _place_spawns(rng: RandomNumberGenerator) -> void:
 		var land_dist: float = _find_land_radius(_center, angle)
 		var target_dist: float = maxf(land_dist * 0.75, 30.0)
 		var target: Vector2 = _center + Vector2(cos(angle), sin(angle)) * target_dist
-		var snapped: Vector2 = _find_walkable_near(target, 80)
+		var snapped: Vector2 = _find_grass_or_path_near(target, 80)
+
+		# Validate minimum distance from safe zones
+		var attempts: int = 0
+		while attempts < 5:
+			var too_close: bool = false
+			for shop_pos in shop_positions:
+				if snapped.distance_to(shop_pos) < Config.PLAYER_SPAWN_MIN_DIST_FROM_SHOP:
+					too_close = true
+					break
+			if not too_close:
+				break
+			attempts += 1
+			target_dist += 10.0
+			target = _center + Vector2(cos(angle), sin(angle)) * target_dist
+			snapped = _find_grass_or_path_near(target, 80)
+
 		spawn_positions.append(snapped)
 
 
@@ -323,6 +360,7 @@ func _place_mob_spawn_zones(rng: RandomNumberGenerator) -> void:
 		var target_dist: float = maxf(land_dist * dist_frac, 30.0)
 		var target: Vector2 = _center + Vector2(cos(angle), sin(angle)) * target_dist
 		var pos: Vector2 = _find_walkable_near(target, 60)
+		pos = _nudge_mob_from_shops(pos, angle, target_dist, 60)
 		mob_spawn_zones.append({
 			"pos": pos,
 			"type": Config.MobType.SLIME,
@@ -337,23 +375,25 @@ func _place_mob_spawn_zones(rng: RandomNumberGenerator) -> void:
 		var target_dist: float = maxf(land_dist * dist_frac, 30.0)
 		var target: Vector2 = _center + Vector2(cos(angle), sin(angle)) * target_dist
 		var pos: Vector2 = _find_walkable_near(target, 60)
+		pos = _nudge_mob_from_shops(pos, angle, target_dist, 60)
 		mob_spawn_zones.append({
 			"pos": pos,
 			"type": Config.MobType.SKELETON,
 			"count": rng.randi_range(3, 5),
 		})
 
-	# 2 knight zones near center (20-35% from center, but not on Hill)
+	# 2 knight zones near center (20-35% from center, but not on mountain)
 	for i in 2:
 		var angle: float = (TAU / 2.0) * float(i) + rng.randf_range(-0.4, 0.4)
 		var land_dist: float = _find_land_radius(_center, angle)
 		var dist_frac: float = rng.randf_range(0.20, 0.35)
 		var target_dist: float = maxf(land_dist * dist_frac, 30.0)
 		var target: Vector2 = _center + Vector2(cos(angle), sin(angle)) * target_dist
-		# Ensure not overlapping with Hill
-		if target.distance_to(_center) < Config.HILL_RADIUS + 10.0:
-			target = _center + Vector2(cos(angle), sin(angle)) * (Config.HILL_RADIUS + 15.0)
+		# Ensure not overlapping with mountain
+		if target.distance_to(_center) < Config.MOUNTAIN_TOTAL_RADIUS + 10.0:
+			target = _center + Vector2(cos(angle), sin(angle)) * (Config.MOUNTAIN_TOTAL_RADIUS + 15.0)
 		var pos: Vector2 = _find_walkable_near(target, 60)
+		pos = _nudge_mob_from_shops(pos, angle, target_dist, 60)
 		mob_spawn_zones.append({
 			"pos": pos,
 			"type": Config.MobType.KNIGHT,
@@ -361,11 +401,28 @@ func _place_mob_spawn_zones(rng: RandomNumberGenerator) -> void:
 		})
 
 
+func _nudge_mob_from_shops(pos: Vector2, angle: float, base_dist: float, search_radius: int) -> Vector2:
+	var current_pos: Vector2 = pos
+	var current_dist: float = base_dist
+	for _attempt in 5:
+		var too_close: bool = false
+		for shop_pos in shop_positions:
+			if current_pos.distance_to(shop_pos) < Config.MOB_MIN_DIST_FROM_SHOP:
+				too_close = true
+				break
+		if not too_close:
+			return current_pos
+		current_dist += 15.0
+		var target: Vector2 = _center + Vector2(cos(angle), sin(angle)) * current_dist
+		current_pos = _find_walkable_near(target, search_radius)
+	return current_pos
+
+
 # ---------------------------------------------------------------------------
 #  River generation: 3 rivers flowing from inland hills toward the coast
 # ---------------------------------------------------------------------------
 func _generate_rivers(rng: RandomNumberGenerator) -> void:
-	var hill_radius: float = Config.HILL_RADIUS
+	var mountain_radius: float = Config.MOUNTAIN_TOTAL_RADIUS
 	var base_angle: float = rng.randf_range(0.0, TAU / 3.0)
 
 	for i in 3:
@@ -421,7 +478,7 @@ func _generate_rivers(rng: RandomNumberGenerator) -> void:
 
 				# Don't carve through the central hill zone
 				var dist_to_center: float = Vector2(fx, fy).distance_to(_center)
-				if dist_to_center <= hill_radius + 5.0:
+				if dist_to_center <= mountain_radius + 5.0:
 					continue
 
 				terrain[idx] = Config.Terrain.SHALLOW_WATER
@@ -518,4 +575,40 @@ func _is_walkable_idx(x: int, y: int) -> bool:
 	if x < 0 or x >= _width or y < 0 or y >= _height:
 		return false
 	var t: int = terrain[y * _width + x]
-	return t != Config.Terrain.STONE and t != Config.Terrain.WATER and t != Config.Terrain.SHALLOW_WATER
+	return t != Config.Terrain.WATER and t != Config.Terrain.SHALLOW_WATER
+
+
+func _is_grass_or_path(x: int, y: int) -> bool:
+	if x < 0 or x >= _width or y < 0 or y >= _height:
+		return false
+	var t: int = terrain[y * _width + x]
+	return t == Config.Terrain.GRASS or t == Config.Terrain.PATH
+
+
+func _find_grass_or_path_near(target: Vector2, search_radius: int) -> Vector2:
+	var tx: int = clampi(int(target.x), 0, _width - 1)
+	var ty: int = clampi(int(target.y), 0, _height - 1)
+
+	if _is_grass_or_path(tx, ty):
+		return Vector2(tx, ty)
+
+	var max_radius: int = search_radius * 2
+	for r in range(1, max_radius + 1):
+		for dy in range(-r, r + 1):
+			for dx in range(-r, r + 1):
+				if abs(dx) != r and abs(dy) != r:
+					continue
+				var px: int = tx + dx
+				var py: int = ty + dy
+				if _is_grass_or_path(px, py):
+					return Vector2(px, py)
+
+	return Vector2(tx, ty)
+
+
+func find_walkable_near(target: Vector2, search_radius: int) -> Vector2:
+	return _find_walkable_near(target, search_radius)
+
+
+func find_grass_or_path_near(target: Vector2, search_radius: int) -> Vector2:
+	return _find_grass_or_path_near(target, search_radius)

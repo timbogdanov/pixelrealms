@@ -105,8 +105,9 @@ func process_tick(delta: float) -> void:
 			player.hp = minf(player.hp + Config.SAFE_ZONE_REGEN * delta, player.max_hp)
 		player.process_movement(delta)
 		if not player.alive and player.respawn_timer <= 0.0:
-			var spawn_idx: int = player.player_id % _map_gen.spawn_positions.size()
-			player.respawn(_map_gen.spawn_positions[spawn_idx])
+			var nearest_shop_pos: Vector2 = _nearest_shop_to(player.position)
+			var respawn_pos: Vector2 = _map_gen.find_grass_or_path_near(nearest_shop_pos, 40)
+			player.respawn(respawn_pos)
 
 	# 5. Mobs
 	for mob in _mobs:
@@ -227,7 +228,11 @@ func _spawn_mobs() -> void:
 			mob.mob_id = _next_mob_id
 			_next_mob_id += 1
 			var offset := Vector2(randf_range(-15, 15), randf_range(-15, 15))
-			mob.init(zone_type, zone_pos + offset, _map_gen)
+			var mob_pos: Vector2 = zone_pos + offset
+			var mob_pos_i: Vector2i = Vector2i(int(mob_pos.x), int(mob_pos.y))
+			if not _map_gen.is_walkable(mob_pos_i):
+				mob_pos = _map_gen.find_walkable_near(mob_pos, 20)
+			mob.init(zone_type, mob_pos, _map_gen)
 			mob.died.connect(_on_mob_died)
 			_mobs.append(mob)
 			_mob_by_id[mob.mob_id] = mob
@@ -581,7 +586,11 @@ func _process_mob_respawns(delta: float) -> void:
 		var mob_type: int = entry["type"]
 		var spawn_pos: Vector2 = entry["spawn_pos"]
 		var offset := Vector2(randf_range(-15, 15), randf_range(-15, 15))
-		mob.init(mob_type, spawn_pos + offset, _map_gen)
+		var mob_pos: Vector2 = spawn_pos + offset
+		var mob_pos_i: Vector2i = Vector2i(int(mob_pos.x), int(mob_pos.y))
+		if not _map_gen.is_walkable(mob_pos_i):
+			mob_pos = _map_gen.find_walkable_near(mob_pos, 20)
+		mob.init(mob_type, mob_pos, _map_gen)
 		mob.died.connect(_on_mob_died)
 		_mobs.append(mob)
 		_mob_by_id[mob.mob_id] = mob
