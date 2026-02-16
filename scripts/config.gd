@@ -176,3 +176,7 @@ const UI_BG := Color(0.12, 0.14, 0.10, 0.85)
 const UI_BORDER := Color(0.45, 0.40, 0.25, 0.9)
 const UI_TEXT := Color(0.9, 0.88, 0.78)
 const UI_TEXT_GOLD := Color(1.0, 0.85, 0.3)
+
+# --- Particles ---
+const MAX_COMBAT_PARTICLES := 100
+const MAX_WEATHER_PARTICLES := 60

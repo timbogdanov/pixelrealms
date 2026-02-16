@@ -19,6 +19,7 @@ boot_splash/show_image=false
 [autoload]
 
 Config="*res://scripts/config.gd"
+SpriteFactory="*res://scripts/sprite_factory.gd"
 Net="*res://scripts/network_manager.gd"
 
 [display]

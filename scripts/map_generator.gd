@@ -19,6 +19,14 @@ var shop_positions: Array[Vector2] = []
 var spawn_positions: Array[Vector2] = []
 var mob_spawn_zones: Array = []
 
+# Water animation
+var _water_pixels: PackedInt32Array = PackedInt32Array()
+var _water_base_colors: PackedColorArray = PackedColorArray()
+var _water_image: Image
+var _water_texture: ImageTexture
+var _water_sprite: Sprite2D
+var _water_time: float = 0.0
+
 # Hill visual color (golden/yellow stone)
 const HILL_COLOR := Color(0.72, 0.65, 0.28)
 
@@ -41,6 +49,15 @@ func _ready() -> void:
 	_sprite = $MapSprite
 	_sprite.texture = _display_texture
 	_sprite.centered = false
+
+	_water_image = Image.create(_width, _height, false, Image.FORMAT_RGBA8)
+	_water_image.fill(Color(0, 0, 0, 0))
+	_water_texture = ImageTexture.create_from_image(_water_image)
+	_water_sprite = Sprite2D.new()
+	_water_sprite.texture = _water_texture
+	_water_sprite.centered = false
+	_water_sprite.z_index = 0  # same level as terrain
+	add_child(_water_sprite)
 
 
 # ---------------------------------------------------------------------------
@@ -212,11 +229,23 @@ func generate(seed_val: int = 42, map_index: int = 0) -> void:
 					var center_blend: float = 1.0 - (dist_to_center / Config.MOUNTAIN_STONE_RADIUS)
 					var color: Color = Config.TERRAIN_COLORS[Config.Terrain.STONE]
 					color = color.lightened(center_blend * 0.12 + variation)
+					# Terrain detail based on hash
+					var mshash: int = (x * 97 + y * 61) % 100
+					if mshash < 10:
+						color = color.lightened(0.08)  # speckle
+					elif mshash < 18:
+						color = color.darkened(0.06)  # crack
 					_terrain_image.set_pixel(x, y, color)
 				else:
 					terrain[idx] = Config.Terrain.HILL
 					var slope_frac: float = (dist_to_center - Config.MOUNTAIN_STONE_RADIUS) / (Config.MOUNTAIN_TOTAL_RADIUS - Config.MOUNTAIN_STONE_RADIUS)
 					var color: Color = HILL_COLOR.lightened((1.0 - slope_frac) * 0.15 + variation)
+					# Terrain detail based on hash
+					var mhhash: int = (x * 97 + y * 61) % 100
+					if mhhash < 10:
+						color = color.lightened(0.06)
+					elif mhhash < 18:
+						color = color.darkened(0.05)
 					_terrain_image.set_pixel(x, y, color)
 				continue
 
@@ -234,6 +263,38 @@ func generate(seed_val: int = 42, map_index: int = 0) -> void:
 			terrain[idx] = t
 			var color: Color = Config.TERRAIN_COLORS[t]
 			color = color.lightened(variation)
+			# Terrain detail based on hash
+			var hash_val: int = (x * 73 + y * 37) % 100
+			match t:
+				Config.Terrain.GRASS:
+					if hash_val < 8:
+						color = color.lightened(0.06)  # lighter blade
+					elif hash_val < 12:
+						color = color.darkened(0.05)  # shadow
+				Config.Terrain.FOREST:
+					var fhash: int = (x * 51 + y * 89) % 100
+					if fhash < 15:
+						color = color.darkened(0.12)  # dark canopy
+					elif fhash < 25:
+						color = color.lightened(0.04)  # lighter patch
+				Config.Terrain.STONE:
+					var shash: int = (x * 97 + y * 61) % 100
+					if shash < 10:
+						color = color.lightened(0.08)  # speckle
+					elif shash < 18:
+						color = color.darkened(0.06)  # crack
+				Config.Terrain.HILL:
+					var hhash: int = (x * 97 + y * 61) % 100
+					if hhash < 10:
+						color = color.lightened(0.06)
+					elif hhash < 18:
+						color = color.darkened(0.05)
+				Config.Terrain.PATH:
+					var phash: int = (x * 41 + y * 83) % 100
+					if phash < 5:
+						color = color.lightened(0.05)  # worn center
+					elif phash < 10:
+						color = color.darkened(0.04)  # dirt variation
 			_terrain_image.set_pixel(x, y, color)
 
 	# --- Generate rivers ---
@@ -255,6 +316,12 @@ func generate(seed_val: int = 42, map_index: int = 0) -> void:
 
 	# --- Place mob spawn zones ---
 	_place_mob_spawn_zones(rng)
+
+	# --- Post-processing passes ---
+	_apply_coastline_detail()
+	_apply_biome_transitions()
+	_apply_mountain_glow()
+	_collect_water_pixels()
 
 	# --- Finalize texture ---
 	_display_texture.update(_terrain_image)
@@ -627,3 +694,139 @@ func find_walkable_near(target: Vector2, search_radius: int) -> Vector2:
 
 func find_grass_or_path_near(target: Vector2, search_radius: int) -> Vector2:
 	return _find_grass_or_path_near(target, search_radius)
+
+
+# ---------------------------------------------------------------------------
+#  Post-processing: coastline detail
+# ---------------------------------------------------------------------------
+func _apply_coastline_detail() -> void:
+	var sand := Color(0.75, 0.68, 0.45)
+	for y in range(1, _height - 1):
+		for x in range(1, _width - 1):
+			var idx: int = y * _width + x
+			var t: int = terrain[idx]
+			if t == Config.Terrain.WATER or t == Config.Terrain.SHALLOW_WATER:
+				continue
+			# Check 4 neighbors for water
+			var has_water: bool = false
+			if terrain[idx - 1] == Config.Terrain.WATER or terrain[idx - 1] == Config.Terrain.SHALLOW_WATER:
+				has_water = true
+			elif terrain[idx + 1] == Config.Terrain.WATER or terrain[idx + 1] == Config.Terrain.SHALLOW_WATER:
+				has_water = true
+			elif terrain[idx - _width] == Config.Terrain.WATER or terrain[idx - _width] == Config.Terrain.SHALLOW_WATER:
+				has_water = true
+			elif terrain[idx + _width] == Config.Terrain.WATER or terrain[idx + _width] == Config.Terrain.SHALLOW_WATER:
+				has_water = true
+			if has_water:
+				var variation: float = float((x * 53 + y * 71) % 100) / 100.0 * 0.06
+				_terrain_image.set_pixel(x, y, sand.lightened(variation))
+
+
+# ---------------------------------------------------------------------------
+#  Post-processing: biome transitions
+# ---------------------------------------------------------------------------
+func _apply_biome_transitions() -> void:
+	for y in range(1, _height - 1):
+		for x in range(1, _width - 1):
+			var idx: int = y * _width + x
+			var t: int = terrain[idx]
+			if t == Config.Terrain.WATER or t == Config.Terrain.SHALLOW_WATER:
+				continue
+			var my_color: Color = _terrain_image.get_pixel(x, y)
+			var blend_count: int = 0
+			var blend_r: float = 0.0
+			var blend_g: float = 0.0
+			var blend_b: float = 0.0
+			for offset in [Vector2i(-1, 0), Vector2i(1, 0), Vector2i(0, -1), Vector2i(0, 1)]:
+				var nx: int = x + offset.x
+				var ny: int = y + offset.y
+				var nt: int = terrain[ny * _width + nx]
+				if nt == Config.Terrain.WATER or nt == Config.Terrain.SHALLOW_WATER:
+					continue
+				if nt != t:
+					var nc: Color = _terrain_image.get_pixel(nx, ny)
+					blend_r += nc.r
+					blend_g += nc.g
+					blend_b += nc.b
+					blend_count += 1
+			if blend_count > 0:
+				var avg_r: float = blend_r / float(blend_count)
+				var avg_g: float = blend_g / float(blend_count)
+				var avg_b: float = blend_b / float(blend_count)
+				var blended := Color(
+					lerpf(my_color.r, avg_r, 0.3),
+					lerpf(my_color.g, avg_g, 0.3),
+					lerpf(my_color.b, avg_b, 0.3))
+				_terrain_image.set_pixel(x, y, blended)
+
+
+# ---------------------------------------------------------------------------
+#  Post-processing: mountain glow aura
+# ---------------------------------------------------------------------------
+func _apply_mountain_glow() -> void:
+	var hill_r: float = Config.HILL_RADIUS
+	var glow_inner: float = hill_r - 5.0
+	var glow_outer: float = hill_r + 8.0
+	var gold := Color(1.0, 0.85, 0.3)
+	var cx: float = _center.x
+	var cy: float = _center.y
+	var min_x: int = maxi(0, int(cx - glow_outer) - 1)
+	var max_x: int = mini(_width - 1, int(cx + glow_outer) + 1)
+	var min_y: int = maxi(0, int(cy - glow_outer) - 1)
+	var max_y: int = mini(_height - 1, int(cy + glow_outer) + 1)
+	for y in range(min_y, max_y + 1):
+		for x in range(min_x, max_x + 1):
+			var dist: float = Vector2(x, y).distance_to(_center)
+			if dist >= glow_inner and dist <= glow_outer:
+				var t: float = 1.0 - absf(dist - hill_r) / 8.0
+				t = clampf(t, 0.0, 1.0) * 0.2
+				var current: Color = _terrain_image.get_pixel(x, y)
+				var glowed := Color(
+					lerpf(current.r, gold.r, t),
+					lerpf(current.g, gold.g, t),
+					lerpf(current.b, gold.b, t))
+				_terrain_image.set_pixel(x, y, glowed)
+
+
+# ---------------------------------------------------------------------------
+#  Water animation: collect water pixel indices and base colors
+# ---------------------------------------------------------------------------
+func _collect_water_pixels() -> void:
+	_water_pixels.clear()
+	_water_base_colors.clear()
+	for y in _height:
+		for x in _width:
+			var idx: int = y * _width + x
+			var t: int = terrain[idx]
+			if t == Config.Terrain.WATER or t == Config.Terrain.SHALLOW_WATER:
+				_water_pixels.append(idx)
+				_water_base_colors.append(_terrain_image.get_pixel(x, y))
+
+
+# ---------------------------------------------------------------------------
+#  Water animation: per-frame update (called from main.gd)
+# ---------------------------------------------------------------------------
+func update_water(delta: float, camera_pos: Vector2, view_half: Vector2) -> void:
+	_water_time += delta
+	var cam_min_x: int = maxi(0, int(camera_pos.x - view_half.x) - 2)
+	var cam_max_x: int = mini(_width - 1, int(camera_pos.x + view_half.x) + 2)
+	var cam_min_y: int = maxi(0, int(camera_pos.y - view_half.y) - 2)
+	var cam_max_y: int = mini(_height - 1, int(camera_pos.y + view_half.y) + 2)
+
+	for i in _water_pixels.size():
+		var idx: int = _water_pixels[i]
+		var x: int = idx % _width
+		var y: int = idx / _width
+		if x < cam_min_x or x > cam_max_x or y < cam_min_y or y > cam_max_y:
+			continue
+		var base: Color = _water_base_colors[i]
+		# Sin-wave ripple
+		var ripple: float = sin(_water_time * 2.0 + float(x) * 0.3 + float(y) * 0.2) * 0.06
+		var color := Color(base.r + ripple, base.g + ripple, base.b + ripple * 1.5)
+		# Sparkle
+		var sparkle_hash: int = (x * 131 + y * 97 + int(_water_time * 3.0)) % 1000
+		if sparkle_hash < 3:
+			color = Color(0.9, 0.95, 1.0, 0.8)
+		_terrain_image.set_pixel(x, y, color)
+
+	_display_texture.update(_terrain_image)

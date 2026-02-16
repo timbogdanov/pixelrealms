@@ -1,13 +1,25 @@
 extends Camera2D
 
 var target: Node2D = null
+var _shake_intensity: float = 0.0
 
 func _ready() -> void:
 	zoom = Vector2(5.0, 5.0)
 
-func _physics_process(_delta: float) -> void:
+func _physics_process(delta: float) -> void:
 	if target and is_instance_valid(target):
 		position = target.position
+	# Screen shake
+	if _shake_intensity > 0.1:
+		_shake_intensity = lerpf(_shake_intensity, 0.0, 8.0 * delta)
+		offset = Vector2(randf_range(-_shake_intensity, _shake_intensity),
+			randf_range(-_shake_intensity, _shake_intensity))
+	elif _shake_intensity > 0.0:
+		_shake_intensity = 0.0
+		offset = Vector2.ZERO
+
+func apply_shake(intensity: float) -> void:
+	_shake_intensity = maxf(_shake_intensity, intensity)
 
 func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventMouseButton and event.pressed:
