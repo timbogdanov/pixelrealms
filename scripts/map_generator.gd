@@ -8,6 +8,7 @@ enum Biome { PLAINS, FOREST_BIOME, DESERT, SNOW_BIOME }
 
 const CHUNK_SIZE := 128
 const CHUNK_BUDGET_USEC := 4000  # 4ms per frame budget for chunk work
+const ROWS_PER_SUBPHASE: int = 16
 
 var headless: bool = false
 
@@ -46,12 +47,13 @@ var mob_spawn_zones: Array = []
 
 # Visual chunks (client only)
 var _visual_chunks: Dictionary = {}  # Vector2i -> Sprite2D
+var _chunk_base_pixels: Dictionary = {}  # Vector2i -> PackedByteArray (pre-coastline RGB bytes)
 var _chunk_parent: Node2D
 var _water_shader: Shader
 var _water_time: float = 0.0
 
 # Multi-frame work queue
-var _chunk_work_queue: Array = []  # [{cx, cy, phase, key, chunk, shore_dist, terrain_img, data_img}]
+var _chunk_work_queue: Array = []
 var _chunk_queued: Dictionary = {}  # Vector2i -> true (fast lookup for queued chunks)
 
 # Hill visual color
@@ -602,8 +604,10 @@ func update_visible_chunks(camera_pos: Vector2, view_half: Vector2) -> void:
 					"cx": cx, "cy": cy, "phase": 0, "key": key,
 					"chunk": PackedByteArray(),
 					"shore_dist": PackedByteArray(),
-					"terrain_img": null,
-					"data_img": null,
+					"terrain_pixels": PackedByteArray(),
+					"data_pixels": PackedByteArray(),
+					"row_offset": 0,
+					"is_refresh": false,
 				})
 				_chunk_queued[key] = true
 				new_chunks_added = true
@@ -646,6 +650,7 @@ func update_visible_chunks(camera_pos: Vector2, view_half: Vector2) -> void:
 		var sprite: Sprite2D = _visual_chunks[key]
 		sprite.queue_free()
 		_visual_chunks.erase(key)
+		_chunk_base_pixels.erase(key)
 
 
 # ---------------------------------------------------------------------------
@@ -663,7 +668,7 @@ func _process_chunk_phase(work: Dictionary) -> void:
 			_chunk_phase_2(work)
 
 
-# Phase 0: terrain data + shore distance + data image
+# Phase 0: terrain data + shore distance + data pixels (byte array)
 func _chunk_phase_0(work: Dictionary) -> void:
 	var cx: int = work["cx"]
 	var cy: int = work["cy"]
@@ -674,21 +679,31 @@ func _chunk_phase_0(work: Dictionary) -> void:
 	var shore_dist: PackedByteArray = _compute_chunk_shore_distance(cx, cy, chunk)
 	work["shore_dist"] = shore_dist
 
-	# Create data image (RG8: R=terrain_type/10, G=shore_dist/20)
-	var data_img := Image.create(CHUNK_SIZE, CHUNK_SIZE, false, Image.FORMAT_RG8)
-	for ly in CHUNK_SIZE:
-		for lx in CHUNK_SIZE:
-			var idx: int = ly * CHUNK_SIZE + lx
-			data_img.set_pixel(lx, ly, Color(float(chunk[idx]) / 10.0, float(shore_dist[idx]) / 20.0, 0.0))
-	work["data_img"] = data_img
+	# Build data pixels as byte array (RG8: 2 bytes per pixel)
+	var pixel_count: int = CHUNK_SIZE * CHUNK_SIZE
+	var data_pixels := PackedByteArray()
+	data_pixels.resize(pixel_count * 2)
+	for idx in pixel_count:
+		var byte_idx: int = idx * 2
+		data_pixels[byte_idx] = clampi(int(float(chunk[idx]) / 10.0 * 255.0), 0, 255)
+		data_pixels[byte_idx + 1] = clampi(int(float(shore_dist[idx]) / 20.0 * 255.0), 0, 255)
+	work["data_pixels"] = data_pixels
+
+	# Initialize terrain pixel buffer (RGB8: 3 bytes per pixel)
+	var terrain_pixels := PackedByteArray()
+	terrain_pixels.resize(pixel_count * 3)
+	work["terrain_pixels"] = terrain_pixels
+	work["row_offset"] = 0
 	work["phase"] = 1
 
 
-# Phase 1: color image generation (the expensive per-pixel loop)
+# Phase 1: color generation — processes ROWS_PER_SUBPHASE rows per call, self-loops
 func _chunk_phase_1(work: Dictionary) -> void:
 	var cx: int = work["cx"]
 	var cy: int = work["cy"]
 	var chunk: PackedByteArray = work["chunk"]
+	var terrain_pixels: PackedByteArray = work["terrain_pixels"]
+	var row_offset: int = work["row_offset"]
 	var base_x: int = cx * CHUNK_SIZE
 	var base_y: int = cy * CHUNK_SIZE
 
@@ -697,9 +712,9 @@ func _chunk_phase_1(work: Dictionary) -> void:
 	var chunk_diagonal: float = float(CHUNK_SIZE) * 0.7071
 	var chunk_near_mountain: bool = chunk_center.distance_to(_mountain_center) < _mountain_total_r + chunk_diagonal
 
-	var terrain_img := Image.create(CHUNK_SIZE, CHUNK_SIZE, false, Image.FORMAT_RGB8)
+	var end_row: int = mini(row_offset + ROWS_PER_SUBPHASE, CHUNK_SIZE)
 
-	for ly in CHUNK_SIZE:
+	for ly in range(row_offset, end_row):
 		var world_y: int = base_y + ly
 		for lx in CHUNK_SIZE:
 			var world_x: int = base_x + lx
@@ -786,20 +801,33 @@ func _chunk_phase_1(work: Dictionary) -> void:
 				# PATH
 				color = color.lightened(sin(fx * 0.5) * 0.03)
 
-			terrain_img.set_pixel(lx, ly, color)
+			# Write RGB bytes instead of set_pixel
+			var byte_idx: int = (ly * CHUNK_SIZE + lx) * 3
+			terrain_pixels[byte_idx] = clampi(int(color.r * 255.0), 0, 255)
+			terrain_pixels[byte_idx + 1] = clampi(int(color.g * 255.0), 0, 255)
+			terrain_pixels[byte_idx + 2] = clampi(int(color.b * 255.0), 0, 255)
 
-	work["terrain_img"] = terrain_img
-	work["phase"] = 2
+	work["row_offset"] = end_row
+	if end_row >= CHUNK_SIZE:
+		work["phase"] = 2
 
 
-# Phase 2: post-processing + texture creation + sprite
+# Phase 2: post-processing + texture creation + sprite (or refresh existing)
 func _chunk_phase_2(work: Dictionary) -> void:
 	var cx: int = work["cx"]
 	var cy: int = work["cy"]
 	var chunk: PackedByteArray = work["chunk"]
-	var terrain_img: Image = work["terrain_img"]
-	var data_img: Image = work["data_img"]
+	var terrain_pixels: PackedByteArray = work["terrain_pixels"]
+	var data_pixels: PackedByteArray = work["data_pixels"]
 	var key: Vector2i = work["key"]
+	var is_refresh: bool = work.get("is_refresh", false)
+
+	# Store base pixels before post-processing (for neighbor refresh later)
+	_chunk_base_pixels[key] = terrain_pixels.duplicate()
+
+	# Create images from byte arrays
+	var terrain_img: Image = Image.create_from_data(CHUNK_SIZE, CHUNK_SIZE, false, Image.FORMAT_RGB8, terrain_pixels)
+	var data_img: Image = Image.create_from_data(CHUNK_SIZE, CHUNK_SIZE, false, Image.FORMAT_RG8, data_pixels)
 
 	# Skip costly post-processing for all-water chunks
 	var wc: int = _chunk_water_count.get(key, 0)
@@ -810,29 +838,80 @@ func _chunk_phase_2(work: Dictionary) -> void:
 		_apply_chunk_mountain_glow(cx, cy, terrain_img)
 
 	# Create textures
-	var terrain_tex := ImageTexture.create_from_image(terrain_img)
-	var data_tex := ImageTexture.create_from_image(data_img)
+	var terrain_tex: ImageTexture = ImageTexture.create_from_image(terrain_img)
+	var data_tex: ImageTexture = ImageTexture.create_from_image(data_img)
 
-	# Create sprite with water shader
-	var sprite := Sprite2D.new()
-	sprite.texture = terrain_tex
-	sprite.centered = false
-	sprite.position = Vector2(cx * CHUNK_SIZE, cy * CHUNK_SIZE)
+	if _visual_chunks.has(key):
+		# Refresh existing sprite (neighbor-triggered re-processing)
+		var sprite: Sprite2D = _visual_chunks[key]
+		sprite.texture = terrain_tex
+		var mat: ShaderMaterial = sprite.material as ShaderMaterial
+		mat.set_shader_parameter("terrain_data", data_tex)
+	else:
+		# Create new sprite with water shader
+		var sprite := Sprite2D.new()
+		sprite.texture = terrain_tex
+		sprite.centered = false
+		sprite.position = Vector2(cx * CHUNK_SIZE, cy * CHUNK_SIZE)
 
-	var mat := ShaderMaterial.new()
-	mat.shader = _water_shader
-	mat.set_shader_parameter("terrain_data", data_tex)
-	sprite.material = mat
+		var mat := ShaderMaterial.new()
+		mat.shader = _water_shader
+		mat.set_shader_parameter("terrain_data", data_tex)
+		sprite.material = mat
 
-	_chunk_parent.add_child(sprite)
-	_visual_chunks[key] = sprite
+		_chunk_parent.add_child(sprite)
+		_visual_chunks[key] = sprite
+
+	# Trigger neighbor refresh only for initial generation, not for refreshes
+	if not is_refresh:
+		_trigger_neighbor_refresh(cx, cy)
 
 	# Free intermediate data
 	work["chunk"] = PackedByteArray()
 	work["shore_dist"] = PackedByteArray()
-	work["terrain_img"] = null
-	work["data_img"] = null
+	work["terrain_pixels"] = PackedByteArray()
+	work["data_pixels"] = PackedByteArray()
 	work["phase"] = 3
+
+
+# ---------------------------------------------------------------------------
+# Neighbor refresh: re-queue adjacent chunks for Phase 2 to heal border seams
+# ---------------------------------------------------------------------------
+
+func _trigger_neighbor_refresh(cx: int, cy: int) -> void:
+	for dir: Vector2i in [Vector2i(-1, 0), Vector2i(1, 0), Vector2i(0, -1), Vector2i(0, 1)]:
+		var nkey := Vector2i(cx + dir.x, cy + dir.y)
+		# Only refresh neighbors that already have visuals AND stored base pixels
+		if not _visual_chunks.has(nkey) or not _chunk_base_pixels.has(nkey):
+			continue
+		# Don't re-queue if already in work queue
+		if _chunk_queued.has(nkey):
+			continue
+		var ncx: int = nkey.x
+		var ncy: int = nkey.y
+		var nchunk: PackedByteArray = _chunks.get(nkey, PackedByteArray())
+		if nchunk.is_empty():
+			continue
+		# Recompute shore distance (now correct since our chunk's data exists)
+		var n_shore_dist: PackedByteArray = _compute_chunk_shore_distance(ncx, ncy, nchunk)
+		# Rebuild data pixels with fresh shore distance
+		var pixel_count: int = CHUNK_SIZE * CHUNK_SIZE
+		var data_pixels := PackedByteArray()
+		data_pixels.resize(pixel_count * 2)
+		for idx in pixel_count:
+			var byte_idx: int = idx * 2
+			data_pixels[byte_idx] = clampi(int(float(nchunk[idx]) / 10.0 * 255.0), 0, 255)
+			data_pixels[byte_idx + 1] = clampi(int(float(n_shore_dist[idx]) / 20.0 * 255.0), 0, 255)
+		_chunk_work_queue.append({
+			"cx": ncx, "cy": ncy, "phase": 2, "key": nkey,
+			"chunk": nchunk,
+			"shore_dist": n_shore_dist,
+			"terrain_pixels": _chunk_base_pixels[nkey],
+			"data_pixels": data_pixels,
+			"row_offset": CHUNK_SIZE,
+			"is_refresh": true,
+		})
+		_chunk_queued[nkey] = true
 
 
 # ---------------------------------------------------------------------------
@@ -1070,6 +1149,7 @@ func clear_visuals() -> void:
 		var sprite: Sprite2D = _visual_chunks[key]
 		sprite.queue_free()
 	_visual_chunks.clear()
+	_chunk_base_pixels.clear()
 	_chunk_work_queue.clear()
 	_chunk_queued.clear()
 
