@@ -167,7 +167,7 @@ const SERVER_PORT := 9090
 const SERVER_URL := "wss://pixelrealms.io/ws"
 const SNAPSHOT_RATE := 20  # Hz
 const LOBBY_TIMER := 60.0
-const MIN_PLAYERS_TO_START := 2
+const MIN_PLAYERS_TO_START := 1
 const LOBBY_WS_PORT := 9091
 const GAME_LOAD_LEAD_TIME := 15.0  # seconds before timer=0 to tell HTML clients to load Godot
 
