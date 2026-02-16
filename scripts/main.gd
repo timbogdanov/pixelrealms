@@ -633,7 +633,7 @@ func _draw_player(player: Player) -> void:
 			_entity_node.draw_rect(Rect2(cx + swing_dir.x * 5.0, cy + swing_dir.y * 5.0 - 0.5, 2.0, 1.0), wep_color)
 		else:
 			var wep_x: float = cx + 3.0 if player.facing_dir.x >= 0.0 else cx - 4.0
-			_entity_node.draw_rect(Rect2(wep_x, cy, 1.0, 1.0), wep_color)
+			_entity_node.draw_rect(Rect2(wep_x, cy - 0.5, 1.0, 1.0), wep_color)
 
 	# Equipment overlay: armor shine on chest
 	if player.armor != "":
@@ -645,11 +645,6 @@ func _draw_player(player: Player) -> void:
 
 	# Styled HP bar
 	_draw_entity_hp_bar(cx, cy - 6.0, 7.0, player.hp, player.max_hp)
-
-	# Player name label
-	var label: String = "You" if player == _human else "P%d" % (player.player_id + 1)
-	var label_col: Color = player.player_color.lightened(0.3)
-	_draw_text_shadowed(_entity_node, Vector2(cx - 4.0, cy - 10.0), label, 7, label_col)
 
 	# Hit flash overlay
 	if _hit_flash_timers.has(player.player_id) and _hit_flash_timers[player.player_id] > 0.0:
@@ -670,7 +665,7 @@ func _draw_player(player: Player) -> void:
 			var a: float = base_angle - arc_half + arc_half * 2.0 * float(step) / 6.0
 			var tip_pos: Vector2 = player.position + Vector2(cos(a), sin(a)) * swing_len
 			var trail_alpha: float = 1.0 - absf(float(step) - 3.0) * 0.12
-			_entity_node.draw_rect(Rect2(tip_pos.x, tip_pos.y, 1.0, 1.0), Color(1.0, 1.0, 1.0, trail_alpha))
+			_entity_node.draw_rect(Rect2(tip_pos.x - 0.5, tip_pos.y - 0.5, 1.0, 1.0), Color(1.0, 1.0, 1.0, trail_alpha))
 
 
 func _draw_circle_outline(cx: float, cy: float, r: float, color: Color) -> void:
@@ -886,6 +881,9 @@ func _draw_hud() -> void:
 		timer_text, HORIZONTAL_ALIGNMENT_LEFT, -1, 14, Config.UI_TEXT)
 	_hud_node.draw_string(ThemeDB.fallback_font, Vector2(vp.x - 75.0, 32.0),
 		"%d Players" % _lobby_player_count, HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color(0.6, 0.58, 0.48))
+
+	# --- Player name labels (screen-space) ---
+	_draw_player_names()
 
 	# --- Minimap (bottom-right) ---
 	_draw_minimap(vp)
@@ -2498,6 +2496,21 @@ func _draw_text_shadowed(node: CanvasItem, pos: Vector2, text: String, size: int
 # ===========================================================================
 # Hit flash timer
 # ===========================================================================
+
+func _draw_player_names() -> void:
+	if _camera == null:
+		return
+	var xform: Transform2D = _camera.get_canvas_transform()
+	for player in _players:
+		if not player.alive or not _is_on_screen(player.position):
+			continue
+		var screen_pos: Vector2 = xform * player.position
+		var label: String = "You" if player == _human else "P%d" % (player.player_id + 1)
+		var label_col: Color = player.player_color.lightened(0.3)
+		var text_x: float = screen_pos.x - float(label.length()) * 2.5
+		var text_y: float = screen_pos.y - 28.0
+		_draw_text_shadowed(_hud_node, Vector2(text_x, text_y), label, 8, label_col)
+
 
 func _tick_hit_flashes(delta: float) -> void:
 	var to_remove: Array = []
