@@ -58,6 +58,9 @@ var _ambient_sprite: Sprite2D
 var _ambient_material: ShaderMaterial
 var _hit_flash_timers: Dictionary = {}  # player_id -> float
 var _minimap_tex: ImageTexture = null
+var _mouse_world_pos: Vector2 = Vector2.ZERO
+var _turret_flash_timer: float = 0.0
+var _splash_timer: Dictionary = {}  # player_id -> float (throttle water splashes)
 
 # ---------------------------------------------------------------------------
 # Mob tracking (client)
@@ -270,6 +273,14 @@ func _process(delta: float) -> void:
 		_game_over_timer -= delta
 		_hud_node.queue_redraw()
 		return
+
+	# Track mouse world position for weapon orbit
+	if _camera != null:
+		_mouse_world_pos = _camera.screen_to_world(get_viewport().get_mouse_position())
+
+	# Tick turret flash
+	if _turret_flash_timer > 0.0:
+		_turret_flash_timer -= delta
 
 	# Send input to server + local prediction for human
 	_send_input_to_server()
@@ -596,8 +607,23 @@ func _draw_player(player: Player) -> void:
 		return
 
 	if not player.alive:
-		# Skull death popup — floats up and fades
-		if SpriteFactory.skull_tex != null:
+		# Death collapse: red squeeze for first 0.3s, then skull floats up
+		var elapsed: float = Config.PLAYER_RESPAWN_TIME - player.respawn_timer
+		if elapsed < 0.3:
+			# Red flash + sprite collapse (squish vertically)
+			var collapse_t: float = elapsed / 0.3
+			var sprite_h: float = 8.0 * (1.0 - collapse_t)
+			var tex: ImageTexture = SpriteFactory.get_player(player.player_id, 0)
+			if tex != null:
+				var draw_x: float = cx - 4.0
+				var draw_w: float = 8.0
+				if player.facing_dir.x < -0.1:
+					draw_x = cx + 4.0
+					draw_w = -8.0
+				_entity_node.draw_texture_rect(tex,
+					Rect2(draw_x, cy - sprite_h * 0.5, draw_w, sprite_h), false,
+					Color(1.0, 0.3, 0.2, 1.0 - collapse_t * 0.5))
+		elif SpriteFactory.skull_tex != null:
 			var alpha: float = clampf(player.respawn_timer / Config.PLAYER_RESPAWN_TIME, 0.0, 1.0)
 			var skull_y: float = cy - (1.0 - alpha) * 8.0
 			_entity_node.draw_texture_rect(SpriteFactory.skull_tex,
@@ -606,12 +632,14 @@ func _draw_player(player: Player) -> void:
 
 	# Pick animation frame: 0=idle, 1=walk_0, 2=walk_1, 3=attack
 	var frame: int = 0
+	var is_moving: bool = false
 	if player.is_attacking:
 		frame = 3
 	elif _player_targets.has(player.player_id):
 		var target: Vector2 = _player_targets[player.player_id]
 		if player.position.distance_squared_to(target) > 0.5:
 			frame = 1 + (int(_game_time * 4.0) % 2)
+			is_moving = true
 
 	var tex: ImageTexture = SpriteFactory.get_player(player.player_id, frame)
 	if tex != null:
@@ -623,38 +651,42 @@ func _draw_player(player: Player) -> void:
 			draw_w = -8.0
 		_entity_node.draw_texture_rect(tex, Rect2(draw_x, cy - 4.0, draw_w, 8.0), false)
 
-	# Equipment overlay: weapon pixel
+	# Equipment overlay: weapon pixel orbiting toward aim direction
 	if player.weapon != "":
 		var weapon_info: Dictionary = Config.EQUIPMENT.get(player.weapon, {})
 		var tier: int = weapon_info.get("tier", 1)
 		var wep_color: Color = SpriteFactory.WEAPON_COLORS.get(tier, Color.WHITE)
 		if player.is_attacking:
 			var swing_dir: Vector2 = player.facing_dir.normalized()
-			_entity_node.draw_rect(Rect2(cx + swing_dir.x * 5.0, cy + swing_dir.y * 5.0 - 0.5, 2.0, 1.0), wep_color)
+			_entity_node.draw_rect(Rect2(cx + swing_dir.x * 4.0 - 0.5, cy + swing_dir.y * 4.0 - 0.5, 2.0, 1.0), wep_color)
 		else:
-			var wep_x: float = cx + 3.0 if player.facing_dir.x >= 0.0 else cx - 4.0
-			_entity_node.draw_rect(Rect2(wep_x, cy - 0.5, 1.0, 1.0), wep_color)
+			# Orbit weapon toward aim direction
+			var aim_angle: float
+			if player == _human:
+				aim_angle = (_mouse_world_pos - player.position).angle()
+			else:
+				aim_angle = player.facing_dir.angle()
+			var wep_ox: float = cos(aim_angle) * 5.0
+			var wep_oy: float = sin(aim_angle) * 5.0
+			_entity_node.draw_rect(Rect2(cx + wep_ox - 0.5, cy + wep_oy - 0.5, 1.0, 1.0), wep_color)
 
-	# Equipment overlay: armor shine on chest
-	if player.armor != "":
-		var armor_info: Dictionary = Config.EQUIPMENT.get(player.armor, {})
-		var tier: int = armor_info.get("tier", 1)
-		var arm_color: Color = SpriteFactory.ARMOR_COLORS.get(tier, Color.GRAY)
-		arm_color.a = 0.5
-		_entity_node.draw_rect(Rect2(cx - 1.0, cy - 1.0, 2.0, 2.0), arm_color)
+	# Styled HP bar (same width as body, thin)
+	_draw_entity_hp_bar(cx, cy - 6.0, 8.0, player.hp, player.max_hp)
 
-	# Styled HP bar
-	_draw_entity_hp_bar(cx, cy - 6.0, 7.0, player.hp, player.max_hp)
-
-	# Hit flash overlay
+	# Hit flash overlay (red tint)
 	if _hit_flash_timers.has(player.player_id) and _hit_flash_timers[player.player_id] > 0.0:
-		_entity_node.draw_rect(Rect2(cx - 4.0, cy - 4.0, 8.0, 8.0), Color(1.0, 1.0, 1.0, 0.4))
+		_entity_node.draw_rect(Rect2(cx - 4.0, cy - 4.0, 8.0, 8.0), Color(1.0, 0.15, 0.1, 0.45))
 
-	# Bounty ring (pulsing red/gold)
-	if player.has_bounty:
-		var bounty_pulse: float = 0.5 + sin(_game_time * 4.0) * 0.3
-		var bounty_color := Color(1.0, 0.3, 0.1, bounty_pulse)
-		_draw_circle_outline(cx, cy, 6.0, bounty_color)
+	# Bounty crown (static golden icon above HP bar)
+	if player.has_bounty and SpriteFactory.crown_tex != null:
+		_entity_node.draw_texture_rect(SpriteFactory.crown_tex,
+			Rect2(cx - 2.5, cy - 10.0, 5.0, 3.0), false)
+
+	# Range indicator (faint circle, human player only)
+	if player == _human:
+		var wep_stats: Dictionary = player.get_weapon_stats()
+		var wep_range: float = wep_stats.get("range", 20.0)
+		_draw_circle_outline(cx, cy, wep_range, Color(1.0, 1.0, 1.0, 0.12))
 
 	# Attack visual (melee swing arc with weapon trail)
 	if player.is_attacking and player.active_slot == 0:
@@ -666,6 +698,16 @@ func _draw_player(player: Player) -> void:
 			var tip_pos: Vector2 = player.position + Vector2(cos(a), sin(a)) * swing_len
 			var trail_alpha: float = 1.0 - absf(float(step) - 3.0) * 0.12
 			_entity_node.draw_rect(Rect2(tip_pos.x - 0.5, tip_pos.y - 0.5, 1.0, 1.0), Color(1.0, 1.0, 1.0, trail_alpha))
+
+	# Water splash particles (all characters, throttled)
+	if is_moving and _map_gen != null:
+		var terrain_type: int = _map_gen.get_terrain(player.position)
+		if terrain_type == Config.Terrain.WATER or terrain_type == Config.Terrain.SHALLOW_WATER:
+			var pid: int = player.player_id
+			var last_splash: float = _splash_timer.get(pid, 0.0)
+			if _game_time - last_splash > 0.15:
+				_splash_timer[pid] = _game_time
+				_spawn_particles(player.position, 2, Color(0.5, 0.7, 0.9, 0.7), 15.0, 0.3, 0.5)
 
 
 func _draw_circle_outline(cx: float, cy: float, r: float, color: Color) -> void:
@@ -885,6 +927,16 @@ func _draw_hud() -> void:
 	# --- Player name labels (screen-space) ---
 	_draw_player_names()
 
+	# --- Turret fire red border flash ---
+	if _turret_flash_timer > 0.0:
+		var flash_alpha: float = (_turret_flash_timer / 0.3) * 0.35
+		var border_w: float = 6.0
+		var fc := Color(1.0, 0.1, 0.05, flash_alpha)
+		_hud_node.draw_rect(Rect2(0, 0, vp.x, border_w), fc)
+		_hud_node.draw_rect(Rect2(0, vp.y - border_w, vp.x, border_w), fc)
+		_hud_node.draw_rect(Rect2(0, 0, border_w, vp.y), fc)
+		_hud_node.draw_rect(Rect2(vp.x - border_w, 0, border_w, vp.y), fc)
+
 	# --- Minimap (bottom-right) ---
 	_draw_minimap(vp)
 
@@ -1020,8 +1072,6 @@ func _draw_shop_equip_row(px: float, row_y: float, idx: int, item_id: String, pa
 			current_id = _human.weapon
 		Config.EquipSlot.BOW:
 			current_id = _human.bow
-		Config.EquipSlot.ARMOR:
-			current_id = _human.armor
 
 	var owned: bool = false
 	var is_upgrade: bool = true
@@ -1376,16 +1426,6 @@ func _draw_inventory_bar(vp: Vector2) -> void:
 		"active": _human.shield_buff_timer > 0.0, "has": _human.shield_potions > 0
 	})
 
-	# Slot 5: Armor
-	var armor_label: String = ""
-	if _human.armor != "":
-		var info: Dictionary = Config.EQUIPMENT.get(_human.armor, {})
-		armor_label = info.get("name", "???")
-	slots.append({
-		"key": "A", "icon": Color(0.6, 0.6, 0.58), "label": armor_label,
-		"count": "", "active": false, "has": _human.armor != ""
-	})
-
 	# Draw each slot
 	for i in slots.size():
 		var slot: Dictionary = slots[i]
@@ -1561,7 +1601,7 @@ func _draw_gold_floats(_vp: Vector2) -> void:
 
 func _spawn_turret_beam(shop_pos: Vector2, target_pos: Vector2) -> void:
 	_turret_beams.append({"from_x": shop_pos.x, "from_y": shop_pos.y,
-		"to_x": target_pos.x, "to_y": target_pos.y, "timer": 0.3})
+		"to_x": target_pos.x, "to_y": target_pos.y, "timer": 0.6})
 
 
 func _tick_turret_beams(delta: float) -> void:
@@ -1575,16 +1615,24 @@ func _tick_turret_beams(delta: float) -> void:
 
 func _draw_turret_beams() -> void:
 	for beam in _turret_beams:
-		var alpha: float = beam["timer"] / 0.3
+		var alpha: float = beam["timer"] / 0.6
 		var from := Vector2(beam["from_x"], beam["from_y"])
 		var to := Vector2(beam["to_x"], beam["to_y"])
-		var steps: int = 12
+		var dir: Vector2 = (to - from).normalized()
+		var perp := Vector2(-dir.y, dir.x)
+		var steps: int = 20
 		for s in steps:
 			var t: float = float(s) / float(steps - 1)
 			var p: Vector2 = from.lerp(to, t)
-			var size: float = 1.0 if s == 0 or s == steps - 1 else 0.6
-			_entity_node.draw_rect(Rect2(p.x - size * 0.5, p.y - size * 0.5, size, size),
-				Color(1.0, 0.2, 0.1, alpha * 0.9))
+			# Outer red beams (offset perpendicular)
+			for offset in [-0.8, 0.8]:
+				var op: Vector2 = p + perp * offset
+				_entity_node.draw_rect(Rect2(op.x - 0.3, op.y - 0.3, 0.6, 0.6),
+					Color(1.0, 0.2, 0.1, alpha * 0.7))
+			# Core yellow-white beam
+			var core_size: float = 1.2 if s == 0 or s == steps - 1 else 0.8
+			_entity_node.draw_rect(Rect2(p.x - core_size * 0.5, p.y - core_size * 0.5, core_size, core_size),
+				Color(1.0, 0.9, 0.3, alpha * 0.95))
 
 
 func _draw_lobby() -> void:
@@ -1933,7 +1981,6 @@ func _build_shop_list() -> void:
 		0:  # Equipment
 			var weapons: Array = []
 			var bows: Array = []
-			var armors: Array = []
 			for item_id: String in _shop_ref.get_equipment_list():
 				var info: Dictionary = Config.EQUIPMENT[item_id]
 				var slot: int = info.get("slot", -1)
@@ -1942,9 +1989,7 @@ func _build_shop_list() -> void:
 						weapons.append(item_id)
 					Config.EquipSlot.BOW:
 						bows.append(item_id)
-					Config.EquipSlot.ARMOR:
-						armors.append(item_id)
-			_shop_items = weapons + bows + armors
+			_shop_items = weapons + bows
 		1:  # Supplies
 			_shop_items = _shop_ref.get_consumable_list()
 		2:  # Skills
@@ -2034,6 +2079,8 @@ func _on_returned_to_lobby() -> void:
 	_particles.clear()
 	_weather_particles.clear()
 	_client_pickups.clear()
+	_splash_timer.clear()
+	_turret_flash_timer = 0.0
 	_bounty_pulses.clear()
 	_water_timer = 0.0
 	_hit_flash_timers.clear()
@@ -2096,7 +2143,6 @@ func _apply_snapshot(data: PackedByteArray) -> void:
 		player.respawn_timer = pd.get("rt", 0.0)
 		player.weapon = pd.get("weapon", "")
 		player.bow = pd.get("bow", "")
-		player.armor = pd.get("armor", "")
 		player.active_slot = pd.get("slot", 0)
 		player.arrows = pd.get("arrows", 0)
 		player.health_potions = pd.get("hpot", 0)
@@ -2238,7 +2284,14 @@ func _predict_human_movement(delta: float) -> void:
 		_human.position += move_dir * Config.PLAYER_SPEED * _human.speed_mult * _human.get_speed_bonus() * delta
 		_human.position.x = clampf(_human.position.x, 0.0, float(Config.MAP_WIDTH - 1))
 		_human.position.y = clampf(_human.position.y, 0.0, float(Config.MAP_HEIGHT - 1))
-		_human.facing_dir = move_dir
+		if not Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT):
+			_human.facing_dir = move_dir
+
+	# When mouse is pressed, face toward mouse for attack direction
+	if Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT) and not _shop_open:
+		var aim_dir: Vector2 = (_mouse_world_pos - _human.position).normalized()
+		if aim_dir.length_squared() > 0.0:
+			_human.facing_dir = aim_dir
 
 
 func _interpolate_entities(delta: float) -> void:
@@ -2303,11 +2356,13 @@ func _handle_game_event(event_data: PackedByteArray) -> void:
 			var from_pos := Vector2(event.get("from_x", 0.0), event.get("from_y", 0.0))
 			var to_pos := Vector2(event.get("to_x", 0.0), event.get("to_y", 0.0))
 			_spawn_turret_beam(from_pos, to_pos)
-			_spawn_particles(to_pos, 15, Color(1.0, 0.2, 0.1), 40.0, 0.5)
-			_spawn_particles(from_pos, 10, Color(1.0, 0.5, 0.1), 30.0, 0.4)
+			_spawn_particles(to_pos, 30, Color(1.0, 0.2, 0.1), 45.0, 0.6)
+			_spawn_particles(to_pos, 10, Color(1.0, 0.9, 0.3), 25.0, 0.4)
+			_spawn_particles(from_pos, 20, Color(1.0, 0.5, 0.1), 35.0, 0.5)
 			if _camera != null:
-				_camera.apply_shake(2.0)
-			_show_message("Shop turret fires!", Color(1.0, 0.3, 0.2), 2.0)
+				_camera.apply_shake(5.0)
+			_turret_flash_timer = 0.3
+			_show_message("TURRET FIRE!", Color(1.0, 0.2, 0.1), 2.5)
 		"hit":
 			var pos := Vector2(event.get("x", 0.0), event.get("y", 0.0))
 			_spawn_particles(pos, 4, Color(1.0, 1.0, 0.9), 30.0, 0.25)
@@ -2361,7 +2416,7 @@ func _is_on_screen(pos: Vector2) -> bool:
 
 func _draw_entity_hp_bar(cx: float, top_y: float, width: float, hp: float, max_hp: float) -> void:
 	var half_w: float = width * 0.5
-	var bar_h: float = 1.5
+	var bar_h: float = 1.0
 	var hp_frac: float = hp / max_hp if max_hp > 0.0 else 0.0
 	# Border
 	_entity_node.draw_rect(Rect2(cx - half_w - 0.5, top_y - 0.5, width + 1.0, bar_h + 1.0), Color(0.1, 0.08, 0.06))
@@ -2507,9 +2562,9 @@ func _draw_player_names() -> void:
 		var screen_pos: Vector2 = xform * player.position
 		var label: String = "You" if player == _human else "P%d" % (player.player_id + 1)
 		var label_col: Color = player.player_color.lightened(0.3)
-		var text_x: float = screen_pos.x - float(label.length()) * 2.5
-		var text_y: float = screen_pos.y - 28.0
-		_draw_text_shadowed(_hud_node, Vector2(text_x, text_y), label, 8, label_col)
+		var text_x: float = screen_pos.x - float(label.length()) * 3.0
+		var text_y: float = screen_pos.y - 42.0
+		_draw_text_shadowed(_hud_node, Vector2(text_x, text_y), label, 10, label_col)
 
 
 func _tick_hit_flashes(delta: float) -> void:

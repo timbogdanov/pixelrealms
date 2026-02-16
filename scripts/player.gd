@@ -25,7 +25,6 @@ var respawn_timer: float = 0.0
 # ---------------------------------------------------------------------------
 var weapon: String = "wooden_sword"
 var bow: String = ""       # empty = no bow
-var armor: String = ""     # empty = no armor
 var active_slot: int = 0   # 0 = weapon (melee), 1 = bow (ranged)
 
 # ---------------------------------------------------------------------------
@@ -86,7 +85,6 @@ func init(id: int, pos: Vector2, color: Color, human: bool) -> void:
 	# Reset equipment
 	weapon = "wooden_sword"
 	bow = ""
-	armor = ""
 	active_slot = 0
 
 	# Reset consumables (skills persist through init — they are session-level)
@@ -331,8 +329,6 @@ func buy_equipment(equip_id: String) -> bool:
 			current_id = weapon
 		Config.EquipSlot.BOW:
 			current_id = bow
-		Config.EquipSlot.ARMOR:
-			current_id = armor
 		_:
 			return false
 
@@ -352,17 +348,12 @@ func buy_equipment(equip_id: String) -> bool:
 			weapon = equip_id
 		Config.EquipSlot.BOW:
 			bow = equip_id
-		Config.EquipSlot.ARMOR:
-			armor = equip_id
 
 	return true
 
 
 func get_damage_reduction() -> float:
 	var dr: float = 0.0
-	if armor != "" and Config.EQUIPMENT.has(armor):
-		var armor_info: Dictionary = Config.EQUIPMENT[armor]
-		dr = armor_info.get("dr", 0.0)
 	if shield_buff_timer > 0.0:
 		dr += Config.SHIELD_POTION_DR
 	return minf(dr, 0.50)  # cap at 50%

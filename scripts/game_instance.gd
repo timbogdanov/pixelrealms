@@ -359,8 +359,6 @@ func _bot_try_buy(player: Player) -> void:
 						current_id = player.weapon
 					Config.EquipSlot.BOW:
 						current_id = player.bow
-					Config.EquipSlot.ARMOR:
-						current_id = player.armor
 				var cur_tier: int = 0
 				if current_id != "":
 					var cur: Dictionary = Config.EQUIPMENT.get(current_id, {})
@@ -896,7 +894,6 @@ func _broadcast_snapshot() -> void:
 			"rt": player.respawn_timer,
 			"weapon": player.weapon,
 			"bow": player.bow,
-			"armor": player.armor,
 			"slot": player.active_slot,
 			"arrows": player.arrows,
 			"hpot": player.health_potions,

@@ -52,10 +52,6 @@ func get_available_items(player: Player) -> Array:
 				if player.bow != "":
 					var cur: Dictionary = Config.EQUIPMENT[player.bow]
 					current_tier = cur["tier"]
-			Config.EquipSlot.ARMOR:
-				if player.armor != "":
-					var cur: Dictionary = Config.EQUIPMENT[player.armor]
-					current_tier = cur["tier"]
 		if tier > current_tier:
 			available.append(item_id)
 	# Affordable consumables

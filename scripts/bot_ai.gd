@@ -230,9 +230,6 @@ func _get_gear_score(player: Player) -> int:
 	if player.bow != "":
 		var stats: Dictionary = Config.EQUIPMENT[player.bow]
 		score += stats["tier"]
-	if player.armor != "":
-		var stats: Dictionary = Config.EQUIPMENT[player.armor]
-		score += stats["tier"]
 	# Factor in skill levels
 	for skill_id: String in Config.SKILLS:
 		score += player.get_skill_level(skill_id)

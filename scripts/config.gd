@@ -63,7 +63,7 @@ const PLAYER_RESPAWN_GOLD_PENALTY := 0.3  # lose 30% gold on death
 const PLAYER_KILL_GOLD_STEAL := 0.5       # steal 50% of victim's gold
 
 # --- Equipment ---
-enum EquipSlot { WEAPON, BOW, ARMOR }
+enum EquipSlot { WEAPON, BOW }
 
 const EQUIPMENT := {
 	# Weapons (melee)
@@ -74,10 +74,6 @@ const EQUIPMENT := {
 	"short_bow":     { "slot": EquipSlot.BOW, "tier": 1, "damage": 15.0, "cost": 15, "name": "Short Bow",     "cooldown": 0.8, "range": 100.0, "speed": 200.0 },
 	"long_bow":      { "slot": EquipSlot.BOW, "tier": 2, "damage": 25.0, "cost": 50, "name": "Long Bow",      "cooldown": 0.7, "range": 140.0, "speed": 250.0 },
 	"crossbow":      { "slot": EquipSlot.BOW, "tier": 3, "damage": 40.0, "cost": 100, "name": "Crossbow",     "cooldown": 1.0, "range": 160.0, "speed": 300.0 },
-	# Armor
-	"leather":       { "slot": EquipSlot.ARMOR, "tier": 1, "dr": 0.10, "cost": 20,  "name": "Leather Armor" },
-	"chainmail":     { "slot": EquipSlot.ARMOR, "tier": 2, "dr": 0.25, "cost": 60,  "name": "Chainmail" },
-	"plate":         { "slot": EquipSlot.ARMOR, "tier": 3, "dr": 0.40, "cost": 120, "name": "Plate Armor" },
 }
 
 # --- Consumables ---

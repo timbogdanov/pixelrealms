@@ -11,6 +11,7 @@ var gold_tex: ImageTexture
 var potion_tex: ImageTexture
 var arrow_tex: ImageTexture
 var skull_tex: ImageTexture
+var crown_tex: ImageTexture
 var flag_tex: Dictionary = {}  # color_idx -> ImageTexture (or "neutral" key for gold)
 
 # --- Equipment visual constants (used by main.gd at render time) ---
@@ -18,11 +19,6 @@ const WEAPON_COLORS: Dictionary = {
 	1: Color(0.6, 0.45, 0.2),    # tier 1: wooden
 	2: Color(0.7, 0.7, 0.75),    # tier 2: iron
 	3: Color(0.92, 0.92, 0.96),  # tier 3: steel
-}
-const ARMOR_COLORS: Dictionary = {
-	1: Color(0.55, 0.4, 0.2),    # leather
-	2: Color(0.62, 0.62, 0.66),  # chainmail
-	3: Color(0.82, 0.82, 0.87),  # plate
 }
 
 const SKIN_COLOR := Color(0.87, 0.72, 0.53)
@@ -43,6 +39,7 @@ func _ready() -> void:
 	_gen_pickups()
 	_gen_arrow()
 	_gen_skull()
+	_gen_crown()
 	_gen_flags()
 
 
@@ -245,6 +242,24 @@ func _gen_skull() -> void:
 		[1,2,1,2,1],
 		[0,1,1,1,0],
 		[0,3,3,3,0]], p)
+
+
+# ==========================================================
+# Crown sprite (5x3): golden crown for bounty players
+# ==========================================================
+
+func _gen_crown() -> void:
+	# 0=clear 1=gold 2=bright_gold 3=gem_red
+	var p: Array = [
+		Color(0, 0, 0, 0),
+		Color(0.85, 0.7, 0.15),
+		Color(1.0, 0.9, 0.3),
+		Color(0.9, 0.15, 0.15),
+	]
+	crown_tex = _make_tex(5, 3, [
+		[2,0,2,0,2],
+		[1,1,1,1,1],
+		[1,3,1,3,1]], p)
 
 
 # ==========================================================
