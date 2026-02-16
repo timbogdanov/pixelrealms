@@ -1681,7 +1681,7 @@ func _draw_lobby_desktop(vp: Vector2) -> void:
 
 	# Server card (taller to fit map preview)
 	var card_w: float = 280.0
-	var card_h: float = 310.0
+	var card_h: float = 360.0
 	var card_x: float = vp.x * 0.5 - card_w * 0.5
 	var card_y: float = vp.y * 0.5 - card_h * 0.5
 
@@ -1705,15 +1705,15 @@ func _draw_lobby_desktop(vp: Vector2) -> void:
 	# Map preview
 	var preview_y: float = card_y + 34.0
 	if _lobby_preview_tex != null:
-		_hud_node.draw_texture_rect(_lobby_preview_tex, Rect2(card_x + 12.0, preview_y, 256.0, 150.0), false)
-		_hud_node.draw_rect(Rect2(card_x + 12.0, preview_y, 256.0, 150.0), Config.UI_BORDER, false, 1.0)
+		_hud_node.draw_texture_rect(_lobby_preview_tex, Rect2(card_x + 12.0, preview_y, 256.0, 200.0), false)
+		_hud_node.draw_rect(Rect2(card_x + 12.0, preview_y, 256.0, 200.0), Config.UI_BORDER, false, 1.0)
 	else:
-		_hud_node.draw_rect(Rect2(card_x + 12.0, preview_y, 256.0, 150.0), Color(0.08, 0.09, 0.06))
-		_hud_node.draw_string(ThemeDB.fallback_font, Vector2(card_x + 90.0, preview_y + 80.0),
+		_hud_node.draw_rect(Rect2(card_x + 12.0, preview_y, 256.0, 200.0), Color(0.08, 0.09, 0.06))
+		_hud_node.draw_string(ThemeDB.fallback_font, Vector2(card_x + 90.0, preview_y + 105.0),
 			"Loading map...", HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color(0.4, 0.38, 0.3))
 
 	# Player count (below preview)
-	var info_y: float = preview_y + 158.0
+	var info_y: float = preview_y + 208.0
 	var count_text: String = "Players: %d / 20" % _lobby_player_count
 	_hud_node.draw_string(ThemeDB.fallback_font, Vector2(card_x + 12.0, info_y),
 		count_text, HORIZONTAL_ALIGNMENT_LEFT, -1, 13, Config.UI_TEXT_GOLD)
@@ -2051,7 +2051,7 @@ func _on_lobby_updated(player_count: int, timer: float, map_index: int, seed_val
 		_lobby_seed = seed_val
 		_map_gen.generate(seed_val, map_index)
 		var preview: Image = _map_gen._terrain_image.duplicate()
-		preview.resize(200, 150, Image.INTERPOLATE_BILINEAR)
+		preview.resize(200, 200, Image.INTERPOLATE_BILINEAR)
 		_lobby_preview_tex = ImageTexture.create_from_image(preview)
 
 
@@ -2597,7 +2597,7 @@ func _generate_minimap_texture() -> void:
 		return
 	var src: Image = _map_gen._terrain_image
 	var mw: int = 100
-	var mh: int = 75
+	var mh: int = 100
 	var mini_img := Image.create(mw, mh, false, Image.FORMAT_RGBA8)
 	var sx: float = float(Config.MAP_WIDTH) / float(mw)
 	var sy: float = float(Config.MAP_HEIGHT) / float(mh)
@@ -2615,7 +2615,7 @@ func _draw_minimap(vp: Vector2) -> void:
 	if _minimap_tex == null or _human == null:
 		return
 	var mw: float = 100.0
-	var mh: float = 75.0
+	var mh: float = 100.0
 	var margin: float = 8.0
 	var mx: float = vp.x - mw - margin
 	var my: float = vp.y - mh - margin - 60.0  # above inventory bar

@@ -1,13 +1,13 @@
 extends Node
 
 # --- Map ---
-const MAP_WIDTH := 800
-const MAP_HEIGHT := 600
+const MAP_WIDTH := 4000
+const MAP_HEIGHT := 4000
 const TILE_SIZE := 1
-const MAP_NAMES := ["United States", "Canada", "Europe"]
+const MAP_NAMES := ["Pixel Realms"]
 
 # --- Terrain ---
-enum Terrain { WATER, SHALLOW_WATER, GRASS, FOREST, HILL, STONE, PATH }
+enum Terrain { WATER, SHALLOW_WATER, GRASS, FOREST, HILL, STONE, PATH, SAND, SNOW, SNOW_FOREST }
 
 const TERRAIN_COLORS := {
 	Terrain.WATER: Color(0.18, 0.32, 0.58),
@@ -17,6 +17,9 @@ const TERRAIN_COLORS := {
 	Terrain.HILL: Color(0.50, 0.48, 0.35),
 	Terrain.STONE: Color(0.45, 0.44, 0.42),
 	Terrain.PATH: Color(0.55, 0.48, 0.32),
+	Terrain.SAND: Color(0.76, 0.70, 0.50),
+	Terrain.SNOW: Color(0.88, 0.90, 0.93),
+	Terrain.SNOW_FOREST: Color(0.15, 0.30, 0.15),
 }
 
 # Terrain speed multipliers (1.0 = full speed)
@@ -28,6 +31,9 @@ const TERRAIN_SPEED := {
 	Terrain.HILL: 0.7,
 	Terrain.STONE: 0.4,
 	Terrain.PATH: 1.2,
+	Terrain.SAND: 1.0,
+	Terrain.SNOW: 1.0,
+	Terrain.SNOW_FOREST: 0.6,
 }
 
 # --- Players ---
@@ -125,17 +131,18 @@ const HILL_RADIUS := 30.0           # pixels, capture zone radius
 const HILL_CAPTURE_TIME := 10.0     # seconds to capture
 const HILL_HOLD_TIME := 45.0        # seconds to win after capture
 const HILL_ACTIVATE_TIME := 300.0   # 5 minutes before Hill activates
-const MOUNTAIN_STONE_RADIUS := 25.0   # STONE peak radius in pixels
-const MOUNTAIN_TOTAL_RADIUS := 90.0   # Total mountain radius (STONE + HILL slopes)
+const MOUNTAIN_STONE_RADIUS := 40.0   # STONE peak radius in pixels
+const MOUNTAIN_TOTAL_RADIUS := 120.0  # Total mountain radius (STONE + HILL slopes)
 
 # --- Shops ---
+const NUM_SHOPS := 9
 const SHOP_INTERACT_RADIUS := 25.0
 const SHOP_SAFE_RADIUS := 35.0    # safe zone radius (slightly larger than interact)
 const SAFE_ZONE_REGEN := 5.0     # HP/sec while in safe zone
-const SHOP_MIN_DIST_FROM_HILL := 150.0
-const SHOP_MIN_DIST_APART := 100.0
-const MOB_MIN_DIST_FROM_SHOP := 60.0
-const PLAYER_SPAWN_MIN_DIST_FROM_SHOP := 30.0
+const SHOP_MIN_DIST_FROM_HILL := 400.0
+const SHOP_MIN_DIST_APART := 300.0
+const MOB_MIN_DIST_FROM_SHOP := 150.0
+const PLAYER_SPAWN_MIN_DIST_FROM_SHOP := 80.0
 
 # --- Pickups ---
 enum PickupType { GOLD, HEALTH_POTION }

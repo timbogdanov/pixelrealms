@@ -24,9 +24,9 @@ func apply_shake(intensity: float) -> void:
 func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventMouseButton and event.pressed:
 		if event.button_index == MOUSE_BUTTON_WHEEL_UP:
-			zoom = (zoom * 1.15).clampf(1.0, 10.0)
+			zoom = (zoom * 1.15).clampf(0.5, 10.0)
 		elif event.button_index == MOUSE_BUTTON_WHEEL_DOWN:
-			zoom = (zoom / 1.15).clampf(1.0, 10.0)
+			zoom = (zoom / 1.15).clampf(0.5, 10.0)
 
 func screen_to_world(screen_pos: Vector2) -> Vector2:
 	return get_canvas_transform().affine_inverse() * screen_pos
