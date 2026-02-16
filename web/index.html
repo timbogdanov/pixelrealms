@@ -433,7 +433,7 @@ function updateUI(data) {
 
 	var timer = data.timer;
 	var countdownEl = document.getElementById('countdown');
-	if (timer !== undefined && timer < 60 && (data.player_count || 0) >= 2) {
+	if (timer !== undefined && timer < 60 && (data.player_count || 0) >= 1) {
 		countdownEl.textContent = Math.ceil(timer) + 's';
 		countdownEl.classList.add('gold');
 	} else {

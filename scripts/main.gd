@@ -1606,7 +1606,7 @@ func _draw_lobby_desktop(vp: Vector2) -> void:
 
 	# Min players note
 	_hud_node.draw_string(ThemeDB.fallback_font, Vector2(card_x + 12.0, bar_y + 20.0),
-		"Min 2 players to start", HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color(0.5, 0.48, 0.38))
+		"Min 1 player to start", HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color(0.5, 0.48, 0.38))
 
 	# Timer (only when joined)
 	if Net.my_player_index >= 0 and _lobby_player_count >= Config.MIN_PLAYERS_TO_START:
