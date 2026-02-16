@@ -56,6 +56,14 @@ var _water_time: float = 0.0
 var _chunk_work_queue: Array = []
 var _chunk_queued: Dictionary = {}  # Vector2i -> true (fast lookup for queued chunks)
 
+# Preload state
+var _fully_preloaded: bool = false
+var _preload_cx: int = 0
+var _preload_cy: int = 0
+var _preload_phase: int = 0  # 0=terrain data pass, 1=visual pass
+var _preload_total: int = 0
+var _preload_done: int = 0
+
 # Hill visual color
 const HILL_COLOR := Color(0.72, 0.65, 0.28)
 
@@ -636,21 +644,22 @@ func update_visible_chunks(camera_pos: Vector2, view_half: Vector2) -> void:
 		else:
 			idx += 1
 
-	# Unload far chunks (4-chunk margin beyond visible)
-	var unload_margin: float = float(CHUNK_SIZE) * 4.0
-	var unload_keys: Array = []
-	for key: Vector2i in _visual_chunks:
-		var world_x: float = float(key.x * CHUNK_SIZE) + float(CHUNK_SIZE) * 0.5
-		var world_y: float = float(key.y * CHUNK_SIZE) + float(CHUNK_SIZE) * 0.5
-		if absf(world_x - camera_pos.x) > view_half.x + unload_margin \
-			or absf(world_y - camera_pos.y) > view_half.y + unload_margin:
-			unload_keys.append(key)
+	# Unload far chunks (skip if fully preloaded — all chunks stay in memory)
+	if not _fully_preloaded:
+		var unload_margin: float = float(CHUNK_SIZE) * 4.0
+		var unload_keys: Array = []
+		for key: Vector2i in _visual_chunks:
+			var world_x: float = float(key.x * CHUNK_SIZE) + float(CHUNK_SIZE) * 0.5
+			var world_y: float = float(key.y * CHUNK_SIZE) + float(CHUNK_SIZE) * 0.5
+			if absf(world_x - camera_pos.x) > view_half.x + unload_margin \
+				or absf(world_y - camera_pos.y) > view_half.y + unload_margin:
+				unload_keys.append(key)
 
-	for key: Vector2i in unload_keys:
-		var sprite: Sprite2D = _visual_chunks[key]
-		sprite.queue_free()
-		_visual_chunks.erase(key)
-		_chunk_base_pixels.erase(key)
+		for key: Vector2i in unload_keys:
+			var sprite: Sprite2D = _visual_chunks[key]
+			sprite.queue_free()
+			_visual_chunks.erase(key)
+			_chunk_base_pixels.erase(key)
 
 
 # ---------------------------------------------------------------------------
@@ -1141,6 +1150,75 @@ func _compute_terrain_color(wx: int, wy: int, t: int) -> Color:
 
 
 # ---------------------------------------------------------------------------
+# Full preload: generate ALL chunks before gameplay starts
+# ---------------------------------------------------------------------------
+
+const PRELOAD_BUDGET_USEC := 12000  # 12ms per frame during loading screen
+
+func preload_all_chunks() -> float:
+	if _preload_total == 0:
+		_preload_total = _grid_w * _grid_h * 2  # 2 passes (terrain data + visuals)
+		_preload_done = 0
+		_preload_cx = 0
+		_preload_cy = 0
+		_preload_phase = 0
+
+	var start: int = Time.get_ticks_usec()
+
+	# Pass 1: generate ALL terrain data first (ensures neighbor data for shore/coastline)
+	if _preload_phase == 0:
+		while _preload_cy < _grid_h:
+			if Time.get_ticks_usec() - start > PRELOAD_BUDGET_USEC:
+				return float(_preload_done) / float(_preload_total)
+			_get_or_generate_chunk(_preload_cx, _preload_cy)
+			_preload_done += 1
+			_preload_cx += 1
+			if _preload_cx >= _grid_w:
+				_preload_cx = 0
+				_preload_cy += 1
+		_preload_phase = 1
+		_preload_cx = 0
+		_preload_cy = 0
+
+	# Pass 2: generate all visuals (all neighbors exist, no seams)
+	if _preload_phase == 1:
+		while _preload_cy < _grid_h:
+			if Time.get_ticks_usec() - start > PRELOAD_BUDGET_USEC:
+				return float(_preload_done) / float(_preload_total)
+			_generate_chunk_visuals_sync(_preload_cx, _preload_cy)
+			_preload_done += 1
+			_preload_cx += 1
+			if _preload_cx >= _grid_w:
+				_preload_cx = 0
+				_preload_cy += 1
+
+	# Done — clean up any queued neighbor refreshes (unnecessary since all chunks exist)
+	_chunk_work_queue.clear()
+	_chunk_queued.clear()
+	_fully_preloaded = true
+	return 1.0
+
+
+func _generate_chunk_visuals_sync(cx: int, cy: int) -> void:
+	var key := Vector2i(cx, cy)
+	if _visual_chunks.has(key):
+		return
+	var work: Dictionary = {
+		"cx": cx, "cy": cy, "phase": 0, "key": key,
+		"chunk": PackedByteArray(),
+		"shore_dist": PackedByteArray(),
+		"terrain_pixels": PackedByteArray(),
+		"data_pixels": PackedByteArray(),
+		"row_offset": 0,
+		"is_refresh": false,
+	}
+	_chunk_phase_0(work)
+	while work["phase"] == 1:
+		_chunk_phase_1(work)
+	_chunk_phase_2(work)
+
+
+# ---------------------------------------------------------------------------
 # Clear all visual chunks (for game cleanup)
 # ---------------------------------------------------------------------------
 
@@ -1152,6 +1230,12 @@ func clear_visuals() -> void:
 	_chunk_base_pixels.clear()
 	_chunk_work_queue.clear()
 	_chunk_queued.clear()
+	_fully_preloaded = false
+	_preload_total = 0
+	_preload_done = 0
+	_preload_cx = 0
+	_preload_cy = 0
+	_preload_phase = 0
 
 
 # ---------------------------------------------------------------------------

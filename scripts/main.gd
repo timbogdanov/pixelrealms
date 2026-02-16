@@ -80,12 +80,13 @@ var _mob_targets: Dictionary = {}     # mob_id -> Vector2
 # ---------------------------------------------------------------------------
 # Game state
 # ---------------------------------------------------------------------------
-enum GameState { LOBBY, PLAYING, GAME_OVER }
+enum GameState { LOBBY, LOADING, PLAYING, GAME_OVER }
 var _game_state: int = GameState.LOBBY
 var _game_over: bool = false
 var _winner_id: int = -1
 var _game_time: float = 0.0
 var _game_over_timer: float = 10.0
+var _loading_progress: float = 0.0
 
 # ---------------------------------------------------------------------------
 # Lobby
@@ -138,19 +139,13 @@ func _ready() -> void:
 
 
 func _start_game_client(seed_val: int, my_index: int) -> void:
-	_game_state = GameState.PLAYING
+	_game_state = GameState.LOADING
+	_loading_progress = 0.0
 	_game_over = false
 	_game_over_timer = 10.0
 	_winner_id = -1
 	_game_time = 0.0
 	_map_gen.generate(seed_val, _lobby_map_index)
-	# Pre-generate terrain data around spawn so visuals load instantly
-	var _pre_spawn: Vector2 = _map_gen.spawn_positions[my_index]
-	var scx: int = int(_pre_spawn.x) / 128
-	var scy: int = int(_pre_spawn.y) / 128
-	for dy in range(-3, 4):
-		for dx in range(-3, 4):
-			_map_gen._get_or_generate_chunk(scx + dx, scy + dy)
 	_setup_fog_layer()
 	_setup_ambient_layer()
 	_spawn_hill()
@@ -165,7 +160,6 @@ func _start_game_client(seed_val: int, my_index: int) -> void:
 		_players.append(player)
 		add_child(player)
 	_human = _players[my_index]
-	_camera.target = _human
 	_generate_minimap_texture()
 
 
@@ -275,6 +269,13 @@ func _process(delta: float) -> void:
 	# Client-only rendering and input
 	if _game_state == GameState.LOBBY:
 		_hud_node.queue_redraw()
+		return
+	if _game_state == GameState.LOADING:
+		_loading_progress = _map_gen.preload_all_chunks()
+		_hud_node.queue_redraw()
+		if _loading_progress >= 1.0:
+			_camera.target = _human
+			_game_state = GameState.PLAYING
 		return
 	if _game_state == GameState.GAME_OVER:
 		_game_over_timer -= delta
@@ -849,6 +850,9 @@ func _render_fog() -> void:
 func _draw_hud() -> void:
 	if _game_state == GameState.LOBBY:
 		_draw_lobby()
+		return
+	if _game_state == GameState.LOADING:
+		_draw_loading_screen()
 		return
 	if _game_state == GameState.GAME_OVER:
 		_draw_game_over()
@@ -1637,6 +1641,29 @@ func _draw_turret_beams() -> void:
 			var core_size: float = 1.2 if s == 0 or s == steps - 1 else 0.8
 			_entity_node.draw_rect(Rect2(p.x - core_size * 0.5, p.y - core_size * 0.5, core_size, core_size),
 				Color(1.0, 0.9, 0.3, alpha * 0.95))
+
+
+func _draw_loading_screen() -> void:
+	var vp: Vector2 = _hud_node.get_viewport_rect().size
+	# Dark background
+	_hud_node.draw_rect(Rect2(0, 0, vp.x, vp.y), Color(0.05, 0.05, 0.04))
+	# Title
+	var cx: float = vp.x * 0.5
+	var ty: float = vp.y * 0.4
+	_hud_node.draw_string(ThemeDB.fallback_font, Vector2(cx - 60.0, ty),
+		"Loading World...", HORIZONTAL_ALIGNMENT_LEFT, -1, 16, Color(0.8, 0.75, 0.5))
+	# Progress bar
+	var bar_w: float = 300.0
+	var bar_h: float = 16.0
+	var bar_x: float = (vp.x - bar_w) * 0.5
+	var bar_y: float = ty + 30.0
+	_hud_node.draw_rect(Rect2(bar_x, bar_y, bar_w, bar_h), Color(0.1, 0.1, 0.08))
+	_hud_node.draw_rect(Rect2(bar_x, bar_y, bar_w * _loading_progress, bar_h), Color(0.7, 0.65, 0.3))
+	_hud_node.draw_rect(Rect2(bar_x, bar_y, bar_w, bar_h), Color(0.4, 0.35, 0.2), false, 1.0)
+	# Percentage
+	var pct_text: String = "%d%%" % int(_loading_progress * 100.0)
+	_hud_node.draw_string(ThemeDB.fallback_font, Vector2(cx - 10.0, bar_y + 13.0),
+		pct_text, HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color(0.9, 0.85, 0.6))
 
 
 func _draw_lobby() -> void:
