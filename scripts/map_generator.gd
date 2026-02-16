@@ -2,11 +2,12 @@ extends Node2D
 
 ## Chunk-based procedural map generator for the Pixel Realms battle arena.
 ## Terrain generates lazily per-chunk on first access.
-## Server only generates chunks entities occupy. Client only generates visuals near camera.
+## Visual generation is split across multiple frames with time budgeting.
 
 enum Biome { PLAINS, FOREST_BIOME, DESERT, SNOW_BIOME }
 
 const CHUNK_SIZE := 128
+const CHUNK_BUDGET_USEC := 4000  # 4ms per frame budget for chunk work
 
 var headless: bool = false
 
@@ -17,6 +18,7 @@ var _grid_h: int
 
 # Chunks: terrain data (lazy, generated on first access)
 var _chunks: Dictionary = {}  # Vector2i(cx,cy) -> PackedByteArray
+var _chunk_water_count: Dictionary = {}  # Vector2i -> int (water pixel count per chunk)
 
 # Pre-computed global data (rivers/roads as pixel positions)
 var _river_pixels: Dictionary = {}  # Vector2i(x,y) -> true
@@ -43,10 +45,14 @@ var spawn_positions: Array[Vector2] = []
 var mob_spawn_zones: Array = []
 
 # Visual chunks (client only)
-var _visual_chunks: Dictionary = {}  # Vector2i -> {sprite: Sprite2D, mat: ShaderMaterial}
+var _visual_chunks: Dictionary = {}  # Vector2i -> Sprite2D
 var _chunk_parent: Node2D
 var _water_shader: Shader
 var _water_time: float = 0.0
+
+# Multi-frame work queue
+var _chunk_work_queue: Array = []  # [{cx, cy, phase, key, chunk, shore_dist, terrain_img, data_img}]
+var _chunk_queued: Dictionary = {}  # Vector2i -> true (fast lookup for queued chunks)
 
 # Hill visual color
 const HILL_COLOR := Color(0.72, 0.65, 0.28)
@@ -76,6 +82,7 @@ func _ready() -> void:
 
 func generate(seed_val: int = 42, _map_index: int = 0) -> void:
 	_chunks.clear()
+	_chunk_water_count.clear()
 	_river_pixels.clear()
 	_road_pixels.clear()
 
@@ -173,12 +180,10 @@ func _compute_terrain_type_at(x: int, y: int) -> int:
 	var fx: float = float(x)
 	var fy: float = float(y)
 
-	# Hard water border (30px)
 	var dist_to_edge: int = mini(mini(x, _width - 1 - x), mini(y, _height - 1 - y))
 	if dist_to_edge < 30:
 		return Config.Terrain.WATER
 
-	# Island shape
 	var dx: float = (fx - _center_x) / _max_radius
 	var dy: float = (fy - _center_y) / _max_radius
 	var dist_sq: float = dx * dx + dy * dy
@@ -190,10 +195,8 @@ func _compute_terrain_type_at(x: int, y: int) -> int:
 	if land_value <= 0.04:
 		return Config.Terrain.SHALLOW_WATER
 
-	# Elevation + biome
 	var elev_val: float = _elevation_noise.get_noise_2d(fx, fy)
 	var elevation: float = (elev_val + 1.0) * 0.5
-
 	var temp: float = _temperature_noise.get_noise_2d(fx, fy)
 	var moist: float = _moisture_noise.get_noise_2d(fx, fy)
 	var detail: float = _detail_noise.get_noise_2d(fx, fy)
@@ -233,7 +236,7 @@ func _compute_terrain_type_at(x: int, y: int) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Lazy chunk generation
+# Lazy chunk generation (terrain data only)
 # ---------------------------------------------------------------------------
 
 func _get_or_generate_chunk(cx: int, cy: int) -> PackedByteArray:
@@ -247,42 +250,57 @@ func _get_or_generate_chunk(cx: int, cy: int) -> PackedByteArray:
 	var base_x: int = cx * CHUNK_SIZE
 	var base_y: int = cy * CHUNK_SIZE
 
+	# Pre-check if chunk overlaps mountain
+	var chunk_center := Vector2(float(base_x + CHUNK_SIZE / 2), float(base_y + CHUNK_SIZE / 2))
+	var chunk_diagonal: float = float(CHUNK_SIZE) * 0.7071
+	var chunk_near_mountain: bool = chunk_center.distance_to(_mountain_center) < _mountain_total_r + chunk_diagonal
+
+	var water_count: int = 0
+
 	for ly in CHUNK_SIZE:
 		var world_y: int = base_y + ly
 		if world_y >= _height:
 			for lx in CHUNK_SIZE:
 				chunk[ly * CHUNK_SIZE + lx] = Config.Terrain.WATER
+			water_count += CHUNK_SIZE
 			continue
 		for lx in CHUNK_SIZE:
 			var world_x: int = base_x + lx
 			if world_x >= _width:
 				chunk[ly * CHUNK_SIZE + lx] = Config.Terrain.WATER
+				water_count += 1
 				continue
 
 			var pixel_key := Vector2i(world_x, world_y)
 
-			# Check river/road overlays first (these override base terrain)
+			# Check river/road overlays first
 			if _river_pixels.has(pixel_key):
 				chunk[ly * CHUNK_SIZE + lx] = Config.Terrain.SHALLOW_WATER
+				water_count += 1
 				continue
 			if _road_pixels.has(pixel_key):
 				chunk[ly * CHUNK_SIZE + lx] = Config.Terrain.PATH
 				continue
 
-			# Check mountain override
-			var dist_to_hill: float = Vector2(world_x, world_y).distance_to(_mountain_center)
-			if dist_to_hill <= _mountain_total_r:
-				var base_t: int = _compute_terrain_type_at(world_x, world_y)
-				if base_t != Config.Terrain.WATER and base_t != Config.Terrain.SHALLOW_WATER:
-					if dist_to_hill <= _mountain_stone_r:
-						chunk[ly * CHUNK_SIZE + lx] = Config.Terrain.STONE
-					else:
-						chunk[ly * CHUNK_SIZE + lx] = Config.Terrain.HILL
-					continue
+			# Check mountain override (only if chunk is near mountain)
+			if chunk_near_mountain:
+				var dist_to_hill: float = Vector2(world_x, world_y).distance_to(_mountain_center)
+				if dist_to_hill <= _mountain_total_r:
+					var base_t: int = _compute_terrain_type_at(world_x, world_y)
+					if base_t != Config.Terrain.WATER and base_t != Config.Terrain.SHALLOW_WATER:
+						if dist_to_hill <= _mountain_stone_r:
+							chunk[ly * CHUNK_SIZE + lx] = Config.Terrain.STONE
+						else:
+							chunk[ly * CHUNK_SIZE + lx] = Config.Terrain.HILL
+						continue
 
-			chunk[ly * CHUNK_SIZE + lx] = _compute_terrain_type_at(world_x, world_y)
+			var t: int = _compute_terrain_type_at(world_x, world_y)
+			chunk[ly * CHUNK_SIZE + lx] = t
+			if t == Config.Terrain.WATER or t == Config.Terrain.SHALLOW_WATER:
+				water_count += 1
 
 	_chunks[key] = chunk
+	_chunk_water_count[key] = water_count
 	return chunk
 
 
@@ -341,7 +359,6 @@ func _compute_rivers(rng: RandomNumberGenerator) -> void:
 		start_x = clampf(start_x, 40.0, float(_width - 40))
 		start_y = clampf(start_y, 40.0, float(_height - 40))
 
-		# Skip if starting in water
 		var start_t: int = _compute_terrain_type_at(int(start_x), int(start_y))
 		if start_t == Config.Terrain.WATER:
 			continue
@@ -356,12 +373,10 @@ func _compute_rivers(rng: RandomNumberGenerator) -> void:
 			var py: int = int(cur_y)
 			if px < 1 or px >= _width - 1 or py < 1 or py >= _height - 1:
 				break
-
 			var base_t: int = _compute_terrain_type_at(px, py)
 			if base_t == Config.Terrain.WATER:
 				break
 
-			# Carve river strip perpendicular to walk direction
 			var perp_angle: float = walk_angle + PI * 0.5
 			var perp_dx: float = cos(perp_angle)
 			var perp_dy: float = sin(perp_angle)
@@ -375,12 +390,10 @@ func _compute_rivers(rng: RandomNumberGenerator) -> void:
 				var t: int = _compute_terrain_type_at(fx, fy)
 				if t == Config.Terrain.WATER or t == Config.Terrain.SHALLOW_WATER or t == Config.Terrain.STONE:
 					continue
-				# Don't carve through mountain zone
 				if Vector2(fx, fy).distance_to(hill_position) <= _mountain_total_r + 5.0:
 					continue
 				_river_pixels[Vector2i(fx, fy)] = true
 
-			# Advance with wobble
 			walk_angle += rng.randf_range(-0.25, 0.25)
 			var to_hill: Vector2 = hill_position - Vector2(cur_x, cur_y)
 			var away_angle: float = to_hill.angle() + PI
@@ -431,11 +444,9 @@ func _place_shops(rng: RandomNumberGenerator) -> void:
 # ---------------------------------------------------------------------------
 
 func _compute_roads() -> void:
-	# Connect all shops to hill
 	for shop_pos in shop_positions:
 		_compute_path_pixels(shop_pos, hill_position)
 
-	# Connect each shop to nearest neighbor
 	for i in shop_positions.size():
 		var nearest_dist: float = 999999.0
 		var nearest_idx: int = -1
@@ -469,7 +480,6 @@ func _compute_path_pixels(from_pos: Vector2, to_pos: Vector2) -> void:
 				var fy: int = py + dy
 				if fx < 0 or fx >= _width or fy < 0 or fy >= _height:
 					continue
-				# Only mark road on land that would be walkable
 				var t: int = _compute_terrain_type_at(fx, fy)
 				if t == Config.Terrain.GRASS or t == Config.Terrain.FOREST \
 					or t == Config.Terrain.SAND or t == Config.Terrain.SNOW \
@@ -505,7 +515,6 @@ func _place_spawns(rng: RandomNumberGenerator) -> void:
 		if too_close:
 			continue
 
-		# Connect spawn to nearest shop
 		var nearest_shop: Vector2 = _find_nearest(pos, shop_positions)
 		_compute_path_pixels(pos, nearest_shop)
 
@@ -573,6 +582,9 @@ func update_visible_chunks(camera_pos: Vector2, view_half: Vector2) -> void:
 
 	_water_time += get_process_delta_time()
 
+	# Update global water time (single call instead of per-chunk)
+	RenderingServer.global_shader_parameter_set("water_time", _water_time)
+
 	# Compute visible chunk range with 2-chunk margin
 	var margin: float = float(CHUNK_SIZE) * 2.0
 	var min_x: int = maxi(0, int((camera_pos.x - view_half.x - margin) / float(CHUNK_SIZE)))
@@ -580,22 +592,45 @@ func update_visible_chunks(camera_pos: Vector2, view_half: Vector2) -> void:
 	var min_y: int = maxi(0, int((camera_pos.y - view_half.y - margin) / float(CHUNK_SIZE)))
 	var max_y: int = mini(_grid_h - 1, int((camera_pos.y + view_half.y + margin) / float(CHUNK_SIZE)))
 
-	# Load needed chunks (limit 4 new per frame)
-	var loaded_this_frame: int = 0
+	# Enqueue new chunks that need generation
+	var new_chunks_added: bool = false
 	for cy in range(min_y, max_y + 1):
 		for cx in range(min_x, max_x + 1):
 			var key := Vector2i(cx, cy)
-			if not _visual_chunks.has(key):
-				if loaded_this_frame >= 4:
-					continue
-				_generate_chunk_visuals(cx, cy)
-				loaded_this_frame += 1
-			else:
-				# Update water time uniform
-				var entry: Dictionary = _visual_chunks[key]
-				var mat: ShaderMaterial = entry["mat"]
-				if mat != null:
-					mat.set_shader_parameter("time", _water_time)
+			if not _visual_chunks.has(key) and not _chunk_queued.has(key):
+				_chunk_work_queue.append({
+					"cx": cx, "cy": cy, "phase": 0, "key": key,
+					"chunk": PackedByteArray(),
+					"shore_dist": PackedByteArray(),
+					"terrain_img": null,
+					"data_img": null,
+				})
+				_chunk_queued[key] = true
+				new_chunks_added = true
+
+	# Sort by distance to camera (nearest first) when new chunks added
+	if new_chunks_added:
+		_chunk_work_queue.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+			var a_center := Vector2(float(a["cx"] * CHUNK_SIZE + CHUNK_SIZE / 2),
+									float(a["cy"] * CHUNK_SIZE + CHUNK_SIZE / 2))
+			var b_center := Vector2(float(b["cx"] * CHUNK_SIZE + CHUNK_SIZE / 2),
+									float(b["cy"] * CHUNK_SIZE + CHUNK_SIZE / 2))
+			return a_center.distance_squared_to(camera_pos) < b_center.distance_squared_to(camera_pos)
+		)
+
+	# Process queued work with time budget
+	var start: int = Time.get_ticks_usec()
+	var idx: int = 0
+	while idx < _chunk_work_queue.size():
+		if Time.get_ticks_usec() - start > CHUNK_BUDGET_USEC:
+			break
+		var work: Dictionary = _chunk_work_queue[idx]
+		_process_chunk_phase(work)
+		if work["phase"] >= 3:
+			_chunk_queued.erase(work["key"])
+			_chunk_work_queue.remove_at(idx)
+		else:
+			idx += 1
 
 	# Unload far chunks (4-chunk margin beyond visible)
 	var unload_margin: float = float(CHUNK_SIZE) * 4.0
@@ -608,61 +643,81 @@ func update_visible_chunks(camera_pos: Vector2, view_half: Vector2) -> void:
 			unload_keys.append(key)
 
 	for key: Vector2i in unload_keys:
-		var entry: Dictionary = _visual_chunks[key]
-		var sprite: Sprite2D = entry["sprite"]
+		var sprite: Sprite2D = _visual_chunks[key]
 		sprite.queue_free()
 		_visual_chunks.erase(key)
 
 
 # ---------------------------------------------------------------------------
-# Generate visual sprites for a single chunk
+# Multi-frame phase dispatcher
 # ---------------------------------------------------------------------------
 
-func _generate_chunk_visuals(cx: int, cy: int) -> void:
+func _process_chunk_phase(work: Dictionary) -> void:
+	var phase: int = work["phase"]
+	match phase:
+		0:
+			_chunk_phase_0(work)
+		1:
+			_chunk_phase_1(work)
+		2:
+			_chunk_phase_2(work)
+
+
+# Phase 0: terrain data + shore distance + data image
+func _chunk_phase_0(work: Dictionary) -> void:
+	var cx: int = work["cx"]
+	var cy: int = work["cy"]
+
 	var chunk: PackedByteArray = _get_or_generate_chunk(cx, cy)
+	work["chunk"] = chunk
+
+	var shore_dist: PackedByteArray = _compute_chunk_shore_distance(cx, cy, chunk)
+	work["shore_dist"] = shore_dist
+
+	# Create data image (RG8: R=terrain_type/10, G=shore_dist/20)
+	var data_img := Image.create(CHUNK_SIZE, CHUNK_SIZE, false, Image.FORMAT_RG8)
+	for ly in CHUNK_SIZE:
+		for lx in CHUNK_SIZE:
+			var idx: int = ly * CHUNK_SIZE + lx
+			data_img.set_pixel(lx, ly, Color(float(chunk[idx]) / 10.0, float(shore_dist[idx]) / 20.0, 0.0))
+	work["data_img"] = data_img
+	work["phase"] = 1
+
+
+# Phase 1: color image generation (the expensive per-pixel loop)
+func _chunk_phase_1(work: Dictionary) -> void:
+	var cx: int = work["cx"]
+	var cy: int = work["cy"]
+	var chunk: PackedByteArray = work["chunk"]
 	var base_x: int = cx * CHUNK_SIZE
 	var base_y: int = cy * CHUNK_SIZE
 
-	# Create terrain color image
+	# Pre-check mountain proximity
+	var chunk_center := Vector2(float(base_x + CHUNK_SIZE / 2), float(base_y + CHUNK_SIZE / 2))
+	var chunk_diagonal: float = float(CHUNK_SIZE) * 0.7071
+	var chunk_near_mountain: bool = chunk_center.distance_to(_mountain_center) < _mountain_total_r + chunk_diagonal
+
 	var terrain_img := Image.create(CHUNK_SIZE, CHUNK_SIZE, false, Image.FORMAT_RGB8)
-
-	# Create terrain data image (RG8: R=terrain_type/10, G=shore_dist/20)
-	var data_img := Image.create(CHUNK_SIZE, CHUNK_SIZE, false, Image.FORMAT_RG8)
-
-	# Compute shore distances for this chunk
-	var shore_dist: PackedByteArray = _compute_chunk_shore_distance(cx, cy, chunk)
 
 	for ly in CHUNK_SIZE:
 		var world_y: int = base_y + ly
 		for lx in CHUNK_SIZE:
 			var world_x: int = base_x + lx
-			var idx: int = ly * CHUNK_SIZE + lx
-			var t: int = chunk[idx]
-			var sd: int = shore_dist[idx]
-
-			# Data texture: terrain type and shore distance
-			data_img.set_pixel(lx, ly, Color(float(t) / 10.0, float(sd) / 20.0, 0.0))
-
-			# Color
+			var t: int = chunk[ly * CHUNK_SIZE + lx]
 			var fx: float = float(world_x)
 			var fy: float = float(world_y)
 			var color: Color = Config.TERRAIN_COLORS[t]
 
 			if t == Config.Terrain.WATER:
-				# Depth variation for ocean
 				if world_x >= 0 and world_x < _width and world_y >= 0 and world_y < _height:
 					var depth: float = _continent_noise.get_noise_2d(fx * 0.5, fy * 0.5) * 0.15
 					color = color.darkened(clampf(depth, 0.0, 0.3))
-					# Hard border darkening
 					var dist_to_edge: int = mini(mini(world_x, _width - 1 - world_x), mini(world_y, _height - 1 - world_y))
 					if dist_to_edge < 30:
-						var border_depth: float = float(30 - dist_to_edge) / 30.0 * 0.3
-						color = color.darkened(border_depth)
+						color = color.darkened(float(30 - dist_to_edge) / 30.0 * 0.3)
 			elif t == Config.Terrain.SHALLOW_WATER:
-				var river_var: float = sin(fx * 0.3) * 0.03
-				color = color.lightened(river_var)
+				color = color.lightened(sin(fx * 0.3) * 0.03)
 			elif t != Config.Terrain.PATH:
-				# Land pixel: elevation shading + detail
 				var elev_val: float = _elevation_noise.get_noise_2d(fx, fy)
 				var elevation: float = (elev_val + 1.0) * 0.5
 				var variation: float = _color_noise.get_noise_2d(fx * 3.0, fy * 3.0) * 0.04
@@ -673,15 +728,15 @@ func _generate_chunk_visuals(cx: int, cy: int) -> void:
 					clampf(color.b * shade, 0.0, 1.0))
 				color = color.lightened(variation)
 
-				# Mountain special coloring
-				var dist_to_hill: float = Vector2(world_x, world_y).distance_to(_mountain_center)
-				if t == Config.Terrain.STONE and dist_to_hill <= _mountain_stone_r:
-					var stone_color: Color = Config.TERRAIN_COLORS[Config.Terrain.STONE]
-					var center_blend: float = 1.0 - (dist_to_hill / _mountain_stone_r)
-					color = stone_color.lightened(center_blend * 0.12 + variation)
-				elif t == Config.Terrain.HILL and dist_to_hill <= _mountain_total_r:
-					var slope_frac: float = (dist_to_hill - _mountain_stone_r) / (_mountain_total_r - _mountain_stone_r)
-					color = HILL_COLOR.lightened((1.0 - slope_frac) * 0.15 + variation)
+				# Mountain coloring (only if chunk is near mountain)
+				if chunk_near_mountain:
+					var dist_to_hill: float = Vector2(world_x, world_y).distance_to(_mountain_center)
+					if t == Config.Terrain.STONE and dist_to_hill <= _mountain_stone_r:
+						var center_blend: float = 1.0 - (dist_to_hill / _mountain_stone_r)
+						color = Config.TERRAIN_COLORS[Config.Terrain.STONE].lightened(center_blend * 0.12 + variation)
+					elif t == Config.Terrain.HILL and dist_to_hill <= _mountain_total_r:
+						var slope_frac: float = (dist_to_hill - _mountain_stone_r) / (_mountain_total_r - _mountain_stone_r)
+						color = HILL_COLOR.lightened((1.0 - slope_frac) * 0.15 + variation)
 
 				# Per-terrain pixel detail (hash-based)
 				var hash_val: int = (world_x * 73 + world_y * 37) % 100
@@ -729,19 +784,30 @@ func _generate_chunk_visuals(cx: int, cy: int) -> void:
 							color = color.lightened(0.05)
 			else:
 				# PATH
-				var px_variation: float = sin(fx * 0.5) * 0.03
-				color = color.lightened(px_variation)
+				color = color.lightened(sin(fx * 0.5) * 0.03)
 
 			terrain_img.set_pixel(lx, ly, color)
 
-	# Apply coastline sand strip
-	_apply_chunk_coastline(cx, cy, chunk, terrain_img)
+	work["terrain_img"] = terrain_img
+	work["phase"] = 2
 
-	# Apply dithered transitions
-	_apply_chunk_dither(cx, cy, chunk, terrain_img)
 
-	# Apply mountain glow
-	_apply_chunk_mountain_glow(cx, cy, terrain_img)
+# Phase 2: post-processing + texture creation + sprite
+func _chunk_phase_2(work: Dictionary) -> void:
+	var cx: int = work["cx"]
+	var cy: int = work["cy"]
+	var chunk: PackedByteArray = work["chunk"]
+	var terrain_img: Image = work["terrain_img"]
+	var data_img: Image = work["data_img"]
+	var key: Vector2i = work["key"]
+
+	# Skip costly post-processing for all-water chunks
+	var wc: int = _chunk_water_count.get(key, 0)
+	var total_pixels: int = CHUNK_SIZE * CHUNK_SIZE
+	if wc < total_pixels:
+		_apply_chunk_coastline(cx, cy, chunk, terrain_img)
+		_apply_chunk_dither(cx, cy, chunk, terrain_img)
+		_apply_chunk_mountain_glow(cx, cy, terrain_img)
 
 	# Create textures
 	var terrain_tex := ImageTexture.create_from_image(terrain_img)
@@ -751,26 +817,51 @@ func _generate_chunk_visuals(cx: int, cy: int) -> void:
 	var sprite := Sprite2D.new()
 	sprite.texture = terrain_tex
 	sprite.centered = false
-	sprite.position = Vector2(base_x, base_y)
+	sprite.position = Vector2(cx * CHUNK_SIZE, cy * CHUNK_SIZE)
 
 	var mat := ShaderMaterial.new()
 	mat.shader = _water_shader
 	mat.set_shader_parameter("terrain_data", data_tex)
-	mat.set_shader_parameter("time", _water_time)
 	sprite.material = mat
 
 	_chunk_parent.add_child(sprite)
-	_visual_chunks[Vector2i(cx, cy)] = {"sprite": sprite, "mat": mat}
+	_visual_chunks[key] = sprite
+
+	# Free intermediate data
+	work["chunk"] = PackedByteArray()
+	work["shore_dist"] = PackedByteArray()
+	work["terrain_img"] = null
+	work["data_img"] = null
+	work["phase"] = 3
 
 
 # ---------------------------------------------------------------------------
-# Shore distance computation for a chunk (directional scan, max 20px)
+# Shore distance computation (NO cascade — only reads already-generated chunks)
 # ---------------------------------------------------------------------------
 
 func _compute_chunk_shore_distance(cx: int, cy: int, chunk: PackedByteArray) -> PackedByteArray:
 	var dist := PackedByteArray()
 	dist.resize(CHUNK_SIZE * CHUNK_SIZE)
-	dist.fill(20)  # default: far from shore
+	dist.fill(20)
+
+	var key := Vector2i(cx, cy)
+	var wc: int = _chunk_water_count.get(key, 0)
+
+	# Early exit: all land — no water pixels to process
+	if wc == 0:
+		return dist
+
+	# Early exit: all water — check if deep ocean (all neighbors also all-water)
+	var total_pixels: int = CHUNK_SIZE * CHUNK_SIZE
+	if wc == total_pixels:
+		var any_land_neighbor: bool = false
+		for nkey in [Vector2i(cx - 1, cy), Vector2i(cx + 1, cy), Vector2i(cx, cy - 1), Vector2i(cx, cy + 1)]:
+			var nc: int = _chunk_water_count.get(nkey, total_pixels)
+			if nc < total_pixels:
+				any_land_neighbor = true
+				break
+		if not any_land_neighbor:
+			return dist  # Deep ocean, no shore effects
 
 	var base_x: int = cx * CHUNK_SIZE
 	var base_y: int = cy * CHUNK_SIZE
@@ -781,14 +872,13 @@ func _compute_chunk_shore_distance(cx: int, cy: int, chunk: PackedByteArray) -> 
 			if t != Config.Terrain.WATER and t != Config.Terrain.SHALLOW_WATER:
 				continue
 
-			# Check 4 cardinal directions for land within 20px
 			var min_d: int = 20
 			for dir_idx in 4:
 				var ddx: int = [1, -1, 0, 0][dir_idx]
 				var ddy: int = [0, 0, 1, -1][dir_idx]
-				for step in range(1, 21):
-					var wx: int = base_x + lx + ddx * step
-					var wy: int = base_y + ly + ddy * step
+				for scan_step in range(1, 21):
+					var wx: int = base_x + lx + ddx * scan_step
+					var wy: int = base_y + ly + ddy * scan_step
 					if wx < 0 or wx >= _width or wy < 0 or wy >= _height:
 						break
 					var check_cx: int = wx / CHUNK_SIZE
@@ -799,11 +889,14 @@ func _compute_chunk_shore_distance(cx: int, cy: int, chunk: PackedByteArray) -> 
 					if check_cx == cx and check_cy == cy:
 						check_t = chunk[check_ly * CHUNK_SIZE + check_lx]
 					else:
-						# Need to check adjacent chunk
-						var adj_chunk: PackedByteArray = _get_or_generate_chunk(check_cx, check_cy)
+						# Only read already-generated chunks (NO cascade)
+						var adj_key := Vector2i(check_cx, check_cy)
+						if not _chunks.has(adj_key):
+							break
+						var adj_chunk: PackedByteArray = _chunks[adj_key]
 						check_t = adj_chunk[check_ly * CHUNK_SIZE + check_lx]
 					if check_t != Config.Terrain.WATER and check_t != Config.Terrain.SHALLOW_WATER:
-						min_d = mini(min_d, step)
+						min_d = mini(min_d, scan_step)
 						break
 
 			dist[ly * CHUNK_SIZE + lx] = min_d
@@ -829,7 +922,6 @@ func _apply_chunk_coastline(cx: int, cy: int, chunk: PackedByteArray, img: Image
 			var world_x: int = base_x + lx
 			var world_y: int = base_y + ly
 
-			# Check cardinal neighbors for water
 			var adjacent_water: bool = false
 			var near_water: bool = false
 			for offset in [Vector2i(-1, 0), Vector2i(1, 0), Vector2i(0, -1), Vector2i(0, 1)]:
@@ -849,7 +941,6 @@ func _apply_chunk_coastline(cx: int, cy: int, chunk: PackedByteArray, img: Image
 					sand = sand.darkened(0.06)
 				img.set_pixel(lx, ly, sand)
 			else:
-				# Check distance-2 neighbors
 				for offset in [Vector2i(-2, 0), Vector2i(2, 0), Vector2i(0, -2), Vector2i(0, 2),
 							   Vector2i(-1, -1), Vector2i(1, -1), Vector2i(-1, 1), Vector2i(1, 1)]:
 					var nx: int = world_x + offset.x
@@ -894,7 +985,6 @@ func _apply_chunk_dither(cx: int, cy: int, chunk: PackedByteArray, img: Image) -
 				if nt == Config.Terrain.WATER or nt == Config.Terrain.SHALLOW_WATER or nt == Config.Terrain.PATH:
 					continue
 				if nt != t:
-					# Get neighbor color from neighbor chunk's image or compute it
 					var neighbor_color: Color = _compute_terrain_color(nx, ny, nt)
 					img.set_pixel(lx, ly, neighbor_color)
 					break
@@ -912,25 +1002,21 @@ func _apply_chunk_mountain_glow(cx: int, cy: int, img: Image) -> void:
 	var base_x: int = cx * CHUNK_SIZE
 	var base_y: int = cy * CHUNK_SIZE
 
-	# Quick check: is this chunk anywhere near the hill glow?
 	var chunk_center := Vector2(float(base_x + CHUNK_SIZE / 2), float(base_y + CHUNK_SIZE / 2))
 	if chunk_center.distance_to(hill_position) > glow_outer + float(CHUNK_SIZE):
 		return
 
 	for ly in CHUNK_SIZE:
 		for lx in CHUNK_SIZE:
-			var world_x: int = base_x + lx
-			var world_y: int = base_y + ly
-			var dist: float = Vector2(world_x, world_y).distance_to(hill_position)
+			var dist: float = Vector2(base_x + lx, base_y + ly).distance_to(hill_position)
 			if dist >= glow_inner and dist <= glow_outer:
 				var t: float = 1.0 - absf(dist - hill_r) / 8.0
 				t = clampf(t, 0.0, 1.0) * 0.2
 				var current: Color = img.get_pixel(lx, ly)
-				var glowed := Color(
+				img.set_pixel(lx, ly, Color(
 					lerpf(current.r, gold.r, t),
 					lerpf(current.g, gold.g, t),
-					lerpf(current.b, gold.b, t))
-				img.set_pixel(lx, ly, glowed)
+					lerpf(current.b, gold.b, t)))
 
 
 # ---------------------------------------------------------------------------
@@ -946,7 +1032,11 @@ func _get_terrain_world(wx: int, wy: int, cur_cx: int, cur_cy: int, cur_chunk: P
 	var tly: int = wy % CHUNK_SIZE
 	if tcx == cur_cx and tcy == cur_cy:
 		return cur_chunk[tly * CHUNK_SIZE + tlx]
-	var adj_chunk: PackedByteArray = _get_or_generate_chunk(tcx, tcy)
+	# Only read already-generated chunks (no cascade)
+	var adj_key := Vector2i(tcx, tcy)
+	if not _chunks.has(adj_key):
+		return Config.Terrain.WATER  # Treat unchunked as water for visual purposes
+	var adj_chunk: PackedByteArray = _chunks[adj_key]
 	return adj_chunk[tly * CHUNK_SIZE + tlx]
 
 
@@ -955,13 +1045,11 @@ func _get_terrain_world(wx: int, wy: int, cur_cx: int, cur_cy: int, cur_chunk: P
 # ---------------------------------------------------------------------------
 
 func _compute_terrain_color(wx: int, wy: int, t: int) -> Color:
-	var fx: float = float(wx)
-	var fy: float = float(wy)
 	var color: Color = Config.TERRAIN_COLORS[t]
-
 	if t == Config.Terrain.WATER or t == Config.Terrain.SHALLOW_WATER or t == Config.Terrain.PATH:
 		return color
-
+	var fx: float = float(wx)
+	var fy: float = float(wy)
 	var elev_val: float = _elevation_noise.get_noise_2d(fx, fy)
 	var elevation: float = (elev_val + 1.0) * 0.5
 	var variation: float = _color_noise.get_noise_2d(fx * 3.0, fy * 3.0) * 0.04
@@ -970,8 +1058,7 @@ func _compute_terrain_color(wx: int, wy: int, t: int) -> Color:
 		clampf(color.r * shade, 0.0, 1.0),
 		clampf(color.g * shade, 0.0, 1.0),
 		clampf(color.b * shade, 0.0, 1.0))
-	color = color.lightened(variation)
-	return color
+	return color.lightened(variation)
 
 
 # ---------------------------------------------------------------------------
@@ -980,10 +1067,11 @@ func _compute_terrain_color(wx: int, wy: int, t: int) -> Color:
 
 func clear_visuals() -> void:
 	for key: Vector2i in _visual_chunks:
-		var entry: Dictionary = _visual_chunks[key]
-		var sprite: Sprite2D = entry["sprite"]
+		var sprite: Sprite2D = _visual_chunks[key]
 		sprite.queue_free()
 	_visual_chunks.clear()
+	_chunk_work_queue.clear()
+	_chunk_queued.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -994,7 +1082,6 @@ func generate_preview(seed_val: int, pw: int = 200, ph: int = 200) -> ImageTextu
 	var rng := RandomNumberGenerator.new()
 	rng.seed = seed_val
 
-	# Same noise layers as generate() — must consume rng.randi() in same order
 	var continent_noise := FastNoiseLite.new()
 	continent_noise.seed = rng.randi()
 	continent_noise.noise_type = FastNoiseLite.TYPE_SIMPLEX
@@ -1019,7 +1106,6 @@ func generate_preview(seed_val: int, pw: int = 200, ph: int = 200) -> ImageTextu
 	moisture_noise.frequency = 0.002
 	moisture_noise.fractal_octaves = 3
 
-	# Consume remaining noise seeds to keep rng sequence aligned
 	rng.randi()  # detail_noise
 	rng.randi()  # color_noise
 
@@ -1036,14 +1122,12 @@ func generate_preview(seed_val: int, pw: int = 200, ph: int = 200) -> ImageTextu
 			var fx: float = float(x) * scale_x
 			var fy: float = float(y) * scale_y
 
-			# Hard water border
 			var dist_to_edge: float = minf(minf(fx, float(Config.MAP_WIDTH) - fx),
 				minf(fy, float(Config.MAP_HEIGHT) - fy))
 			if dist_to_edge < 30.0:
 				img.set_pixel(x, y, Config.TERRAIN_COLORS[Config.Terrain.WATER])
 				continue
 
-			# Island shape
 			var dx: float = (fx - pcenter_x) / pmax_radius
 			var dy: float = (fy - pcenter_y) / pmax_radius
 			var dist_sq: float = dx * dx + dy * dy
@@ -1053,12 +1137,10 @@ func generate_preview(seed_val: int, pw: int = 200, ph: int = 200) -> ImageTextu
 			if land_value <= 0.0:
 				img.set_pixel(x, y, Config.TERRAIN_COLORS[Config.Terrain.WATER])
 				continue
-
 			if land_value <= 0.04:
 				img.set_pixel(x, y, Config.TERRAIN_COLORS[Config.Terrain.SHALLOW_WATER])
 				continue
 
-			# Biome
 			var elev_val: float = elevation_noise.get_noise_2d(fx, fy)
 			var elevation: float = (elev_val + 1.0) * 0.5
 			var temp: float = temperature_noise.get_noise_2d(fx, fy)

@@ -1,7 +1,7 @@
 shader_type canvas_item;
 
 uniform sampler2D terrain_data : filter_nearest;
-uniform float time;
+global uniform float water_time;
 
 void fragment() {
 	vec4 base = texture(TEXTURE, UV);
@@ -12,7 +12,7 @@ void fragment() {
 	// Water types: WATER=0, SHALLOW_WATER=1
 	if (terrain_type < 1.5) {
 		float strength = clamp(1.0 - shore_dist / 15.0, 0.0, 1.0);
-		float phase = time * 1.5 + shore_dist * 0.4;
+		float phase = water_time * 1.5 + shore_dist * 0.4;
 		float wave = sin(phase) * 0.04 * strength;
 		base.r += wave;
 		base.g += wave * 0.5;

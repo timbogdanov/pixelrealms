@@ -144,6 +144,13 @@ func _start_game_client(seed_val: int, my_index: int) -> void:
 	_winner_id = -1
 	_game_time = 0.0
 	_map_gen.generate(seed_val, _lobby_map_index)
+	# Pre-generate terrain data around spawn so visuals load instantly
+	var _pre_spawn: Vector2 = _map_gen.spawn_positions[my_index]
+	var scx: int = int(_pre_spawn.x) / 128
+	var scy: int = int(_pre_spawn.y) / 128
+	for dy in range(-3, 4):
+		for dx in range(-3, 4):
+			_map_gen._get_or_generate_chunk(scx + dx, scy + dy)
 	_setup_fog_layer()
 	_setup_ambient_layer()
 	_spawn_hill()
