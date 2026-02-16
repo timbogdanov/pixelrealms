@@ -53,7 +53,7 @@ var _gold_floats: Array = []  # [{x, y, amount, timer, max_timer}]
 var _turret_beams: Array = []  # [{from_x, from_y, to_x, to_y, timer}]
 var _bounty_pulses: Array = []  # [{x, y, timer, max_timer}]
 var _weather_particles: Array = []
-var _water_timer: float = 0.0
+var _chunk_update_timer: float = 0.0
 var _ambient_sprite: Sprite2D
 var _ambient_material: ShaderMaterial
 var _hit_flash_timers: Dictionary = {}  # player_id -> float
@@ -298,14 +298,11 @@ func _process(delta: float) -> void:
 	_tick_weather(delta)
 	_tick_hit_flashes(delta)
 
-	# Water animation (10 FPS)
-	_water_timer += delta
-	if _water_timer >= 0.1:
-		_water_timer = 0.0
-		if _camera != null:
-			var vp_size: Vector2 = get_viewport().get_visible_rect().size
-			var view_half := vp_size / (_camera.zoom * 2.0)
-			_map_gen.update_water(0.1, _camera.position, view_half)
+	# Chunk visual management (terrain streaming + water shader)
+	if _camera != null and _map_gen != null:
+		var vp_size: Vector2 = get_viewport().get_visible_rect().size
+		var view_half := vp_size / (_camera.zoom * 2.0)
+		_map_gen.update_visible_chunks(_camera.position, view_half)
 
 	# Dramatic day/night cycle (~125 second full cycle)
 	if _ambient_material != null:
@@ -2079,7 +2076,7 @@ func _on_returned_to_lobby() -> void:
 	_splash_timer.clear()
 	_turret_flash_timer = 0.0
 	_bounty_pulses.clear()
-	_water_timer = 0.0
+	_chunk_update_timer = 0.0
 	_hit_flash_timers.clear()
 	_minimap_tex = null
 	if _fog_sprite != null:
@@ -2109,6 +2106,9 @@ func _clear_game_entities() -> void:
 	if _hill != null:
 		_hill.queue_free()
 		_hill = null
+	# Clear chunk visuals
+	if _map_gen != null:
+		_map_gen.clear_visuals()
 
 
 # ===========================================================================
@@ -2413,9 +2413,10 @@ func _handle_game_event(event_data: PackedByteArray) -> void:
 func _is_on_screen(pos: Vector2) -> bool:
 	if _camera == null:
 		return true
-	var dx: float = absf(pos.x - _camera.position.x)
-	var dy: float = absf(pos.y - _camera.position.y)
-	return dx < 140.0 and dy < 80.0
+	var vp: Vector2 = get_viewport().get_visible_rect().size
+	var half_w: float = vp.x / _camera.zoom.x * 0.5 + 20.0
+	var half_h: float = vp.y / _camera.zoom.y * 0.5 + 20.0
+	return absf(pos.x - _camera.position.x) < half_w and absf(pos.y - _camera.position.y) < half_h
 
 
 # ===========================================================================
@@ -2590,22 +2591,9 @@ func _tick_hit_flashes(delta: float) -> void:
 # ===========================================================================
 
 func _generate_minimap_texture() -> void:
-	if _map_gen == null or _map_gen._terrain_image == null:
+	if _map_gen == null:
 		return
-	var src: Image = _map_gen._terrain_image
-	var mw: int = 100
-	var mh: int = 100
-	var mini_img := Image.create(mw, mh, false, Image.FORMAT_RGBA8)
-	var sx: float = float(Config.MAP_WIDTH) / float(mw)
-	var sy: float = float(Config.MAP_HEIGHT) / float(mh)
-	for y in mh:
-		for x in mw:
-			var sample_x: int = int(float(x) * sx)
-			var sample_y: int = int(float(y) * sy)
-			sample_x = mini(sample_x, Config.MAP_WIDTH - 1)
-			sample_y = mini(sample_y, Config.MAP_HEIGHT - 1)
-			mini_img.set_pixel(x, y, src.get_pixel(sample_x, sample_y))
-	_minimap_tex = ImageTexture.create_from_image(mini_img)
+	_minimap_tex = _map_gen.generate_preview(_lobby_seed, 100, 100)
 
 
 func _draw_minimap(vp: Vector2) -> void:

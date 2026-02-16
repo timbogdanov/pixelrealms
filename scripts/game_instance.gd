@@ -881,7 +881,11 @@ func _apply_pending_actions() -> void:
 # Snapshot broadcast (sends directly to this game's peers)
 # ===========================================================================
 
+const SNAPSHOT_CULL_RADIUS := 300.0
+const SNAPSHOT_CULL_SQ := SNAPSHOT_CULL_RADIUS * SNAPSHOT_CULL_RADIUS
+
 func _broadcast_snapshot() -> void:
+	# Player data always sent in full (needed for scoreboard/minimap)
 	var player_data: Array = []
 	for player in _players:
 		player_data.append({
@@ -910,59 +914,65 @@ func _broadcast_snapshot() -> void:
 			"bounty": player.has_bounty,
 		})
 
-	var mob_data: Array = []
-	for mob in _mobs:
-		if mob.alive:
-			mob_data.append({
-				"mid": mob.mob_id,
-				"type": mob.mob_type,
-				"x": mob.position.x,
-				"y": mob.position.y,
-				"hp": mob.hp,
-				"mhp": mob.max_hp,
-			})
-
-	var proj_data: Array = []
-	for proj in _projectiles:
-		if proj.alive:
-			proj_data.append({
-				"x": proj.position.x,
-				"y": proj.position.y,
-				"dx": proj.direction.x,
-				"dy": proj.direction.y,
-				"oid": proj.owner_id,
-			})
-
-	var pickup_data: Array = []
-	for pickup in _pickups:
-		if pickup.alive:
-			pickup_data.append({
-				"pid": pickup.pickup_id,
-				"type": pickup.pickup_type,
-				"x": pickup.position.x,
-				"y": pickup.position.y,
-				"amt": pickup.amount,
-			})
-
-	var snapshot: Dictionary = {
-		"t": _game_time,
-		"p": player_data,
-		"m": mob_data,
-		"pr": proj_data,
-		"pk": pickup_data,
-		"h": {
-			"a": _hill.active,
-			"gt": _hill.game_timer,
-			"cp": _hill.capturing_player,
-			"cprog": _hill.capture_progress,
-			"hp": _hill.holding_player,
-			"ht": _hill.hold_timer,
-		},
+	# Hill data always sent
+	var hill_data: Dictionary = {
+		"a": _hill.active,
+		"gt": _hill.game_timer,
+		"cp": _hill.capturing_player,
+		"cprog": _hill.capture_progress,
+		"hp": _hill.holding_player,
+		"ht": _hill.hold_timer,
 	}
 
-	var snapshot_bytes: PackedByteArray = var_to_bytes(snapshot)
+	# Per-peer distance-culled snapshots
 	for pid: int in _game_peers:
-		Net.rpc_state_snapshot.rpc_id(pid, snapshot_bytes)
+		var idx: int = _game_peers[pid]
+		var center: Vector2 = _players[idx].position
+
+		var mob_data: Array = []
+		for mob in _mobs:
+			if mob.alive and mob.position.distance_squared_to(center) < SNAPSHOT_CULL_SQ:
+				mob_data.append({
+					"mid": mob.mob_id,
+					"type": mob.mob_type,
+					"x": mob.position.x,
+					"y": mob.position.y,
+					"hp": mob.hp,
+					"mhp": mob.max_hp,
+				})
+
+		var proj_data: Array = []
+		for proj in _projectiles:
+			if proj.alive and proj.position.distance_squared_to(center) < SNAPSHOT_CULL_SQ:
+				proj_data.append({
+					"x": proj.position.x,
+					"y": proj.position.y,
+					"dx": proj.direction.x,
+					"dy": proj.direction.y,
+					"oid": proj.owner_id,
+				})
+
+		var pickup_data: Array = []
+		for pickup in _pickups:
+			if pickup.alive and pickup.position.distance_squared_to(center) < SNAPSHOT_CULL_SQ:
+				pickup_data.append({
+					"pid": pickup.pickup_id,
+					"type": pickup.pickup_type,
+					"x": pickup.position.x,
+					"y": pickup.position.y,
+					"amt": pickup.amount,
+				})
+
+		var snapshot: Dictionary = {
+			"t": _game_time,
+			"p": player_data,
+			"m": mob_data,
+			"pr": proj_data,
+			"pk": pickup_data,
+			"h": hill_data,
+		}
+
+		Net.rpc_state_snapshot.rpc_id(pid, var_to_bytes(snapshot))
 
 
 # ===========================================================================

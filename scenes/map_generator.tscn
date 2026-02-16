@@ -4,5 +4,3 @@
 
 [node name="MapGenerator" type="Node2D"]
 script = ExtResource("1_mapgen")
-
-[node name="MapSprite" type="Sprite2D" parent="."]
