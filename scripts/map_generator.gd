@@ -25,6 +25,7 @@ var _water_base_colors: PackedColorArray = PackedColorArray()
 var _water_image: Image
 var _water_texture: ImageTexture
 var _water_sprite: Sprite2D
+var _water_shore_dist: PackedFloat32Array = PackedFloat32Array()
 var _water_time: float = 0.0
 
 # Hill visual color (golden/yellow stone)
@@ -700,26 +701,65 @@ func find_grass_or_path_near(target: Vector2, search_radius: int) -> Vector2:
 #  Post-processing: coastline detail
 # ---------------------------------------------------------------------------
 func _apply_coastline_detail() -> void:
-	var sand := Color(0.75, 0.68, 0.45)
-	for y in range(1, _height - 1):
-		for x in range(1, _width - 1):
-			var idx: int = y * _width + x
+	# Pass 1: Find pixels within 1 pixel of water (inner sand)
+	# Pass 2: Find pixels within 2 pixels of water (outer sand blend)
+	var sand_inner := Color(0.76, 0.70, 0.50)
+
+	# We need to mark which pixels are in each band to avoid overwriting during iteration
+	var inner_pixels: Array = []  # [idx, ...]
+	var outer_pixels: Array = []  # [idx, original_color]
+
+	for y in range(1, Config.MAP_HEIGHT - 1):
+		for x in range(1, Config.MAP_WIDTH - 1):
+			var idx: int = y * Config.MAP_WIDTH + x
 			var t: int = terrain[idx]
 			if t == Config.Terrain.WATER or t == Config.Terrain.SHALLOW_WATER:
 				continue
-			# Check 4 neighbors for water
-			var has_water: bool = false
-			if terrain[idx - 1] == Config.Terrain.WATER or terrain[idx - 1] == Config.Terrain.SHALLOW_WATER:
-				has_water = true
-			elif terrain[idx + 1] == Config.Terrain.WATER or terrain[idx + 1] == Config.Terrain.SHALLOW_WATER:
-				has_water = true
-			elif terrain[idx - _width] == Config.Terrain.WATER or terrain[idx - _width] == Config.Terrain.SHALLOW_WATER:
-				has_water = true
-			elif terrain[idx + _width] == Config.Terrain.WATER or terrain[idx + _width] == Config.Terrain.SHALLOW_WATER:
-				has_water = true
-			if has_water:
-				var variation: float = float((x * 53 + y * 71) % 100) / 100.0 * 0.06
-				_terrain_image.set_pixel(x, y, sand.lightened(variation))
+
+			# Check if any cardinal neighbor is water
+			var adjacent_water := false
+			for offset in [Vector2i(-1,0), Vector2i(1,0), Vector2i(0,-1), Vector2i(0,1)]:
+				var ni: int = (y + offset.y) * Config.MAP_WIDTH + (x + offset.x)
+				var nt: int = terrain[ni]
+				if nt == Config.Terrain.WATER or nt == Config.Terrain.SHALLOW_WATER:
+					adjacent_water = true
+					break
+
+			if adjacent_water:
+				inner_pixels.append(idx)
+			else:
+				# Check if any neighbor of neighbor is water (distance 2)
+				var near_water := false
+				for offset in [Vector2i(-2,0), Vector2i(2,0), Vector2i(0,-2), Vector2i(0,2), Vector2i(-1,-1), Vector2i(1,-1), Vector2i(-1,1), Vector2i(1,1)]:
+					var nx: int = x + offset.x
+					var ny: int = y + offset.y
+					if nx >= 0 and nx < Config.MAP_WIDTH and ny >= 0 and ny < Config.MAP_HEIGHT:
+						var ni: int = ny * Config.MAP_WIDTH + nx
+						var nt: int = terrain[ni]
+						if nt == Config.Terrain.WATER or nt == Config.Terrain.SHALLOW_WATER:
+							near_water = true
+							break
+				if near_water:
+					outer_pixels.append([idx, _terrain_image.get_pixel(x, y)])
+
+	# Apply inner sand
+	for idx: int in inner_pixels:
+		var x: int = idx % Config.MAP_WIDTH
+		var y: int = idx / Config.MAP_WIDTH
+		var hash_val: int = (x * 73 + y * 37) % 100
+		var sand: Color = sand_inner
+		if hash_val < 10:
+			sand = sand.darkened(0.06)
+		_terrain_image.set_pixel(x, y, sand)
+
+	# Apply outer sand (blend 50% with original)
+	for entry: Array in outer_pixels:
+		var idx: int = entry[0]
+		var original: Color = entry[1]
+		var x: int = idx % Config.MAP_WIDTH
+		var y: int = idx / Config.MAP_WIDTH
+		var blended: Color = original.lerp(sand_inner, 0.5)
+		_terrain_image.set_pixel(x, y, blended)
 
 
 # ---------------------------------------------------------------------------
@@ -794,13 +834,58 @@ func _apply_mountain_glow() -> void:
 func _collect_water_pixels() -> void:
 	_water_pixels.clear()
 	_water_base_colors.clear()
-	for y in _height:
-		for x in _width:
-			var idx: int = y * _width + x
+	_water_shore_dist.clear()
+
+	# Build a map of water pixel index -> position in our arrays
+	var water_indices: Dictionary = {}  # map pixel index -> array index
+	for y in Config.MAP_HEIGHT:
+		for x in Config.MAP_WIDTH:
+			var idx: int = y * Config.MAP_WIDTH + x
 			var t: int = terrain[idx]
 			if t == Config.Terrain.WATER or t == Config.Terrain.SHALLOW_WATER:
+				water_indices[idx] = _water_pixels.size()
 				_water_pixels.append(idx)
 				_water_base_colors.append(_terrain_image.get_pixel(x, y))
+				_water_shore_dist.append(20.0)  # default far
+
+	# BFS from land pixels to compute shore distance
+	var queue: Array = []  # [[x, y, dist]]
+	# Seed: all land pixels adjacent to water
+	for y in Config.MAP_HEIGHT:
+		for x in Config.MAP_WIDTH:
+			var idx: int = y * Config.MAP_WIDTH + x
+			var t: int = terrain[idx]
+			if t != Config.Terrain.WATER and t != Config.Terrain.SHALLOW_WATER:
+				# Check if any neighbor is water
+				for offset in [Vector2i(-1,0), Vector2i(1,0), Vector2i(0,-1), Vector2i(0,1)]:
+					var nx: int = x + offset.x
+					var ny: int = y + offset.y
+					if nx >= 0 and nx < Config.MAP_WIDTH and ny >= 0 and ny < Config.MAP_HEIGHT:
+						var nidx: int = ny * Config.MAP_WIDTH + nx
+						if water_indices.has(nidx) and _water_shore_dist[water_indices[nidx]] > 0.5:
+							_water_shore_dist[water_indices[nidx]] = 1.0
+							queue.append([nx, ny, 1.0])
+
+	# BFS expand
+	var head: int = 0
+	while head < queue.size():
+		var entry: Array = queue[head]
+		head += 1
+		var cx: int = entry[0]
+		var cy: int = entry[1]
+		var cd: float = entry[2]
+		if cd >= 20.0:
+			continue
+		for offset in [Vector2i(-1,0), Vector2i(1,0), Vector2i(0,-1), Vector2i(0,1)]:
+			var nx: int = cx + offset.x
+			var ny: int = cy + offset.y
+			if nx >= 0 and nx < Config.MAP_WIDTH and ny >= 0 and ny < Config.MAP_HEIGHT:
+				var nidx: int = ny * Config.MAP_WIDTH + nx
+				if water_indices.has(nidx):
+					var arr_idx: int = water_indices[nidx]
+					if cd + 1.0 < _water_shore_dist[arr_idx]:
+						_water_shore_dist[arr_idx] = cd + 1.0
+						queue.append([nx, ny, cd + 1.0])
 
 
 # ---------------------------------------------------------------------------
@@ -808,25 +893,33 @@ func _collect_water_pixels() -> void:
 # ---------------------------------------------------------------------------
 func update_water(delta: float, camera_pos: Vector2, view_half: Vector2) -> void:
 	_water_time += delta
-	var cam_min_x: int = maxi(0, int(camera_pos.x - view_half.x) - 2)
-	var cam_max_x: int = mini(_width - 1, int(camera_pos.x + view_half.x) + 2)
-	var cam_min_y: int = maxi(0, int(camera_pos.y - view_half.y) - 2)
-	var cam_max_y: int = mini(_height - 1, int(camera_pos.y + view_half.y) + 2)
+	var cam_min_x: int = int(maxf(camera_pos.x - view_half.x - 2.0, 0.0))
+	var cam_max_x: int = int(minf(camera_pos.x + view_half.x + 2.0, float(Config.MAP_WIDTH - 1)))
+	var cam_min_y: int = int(maxf(camera_pos.y - view_half.y - 2.0, 0.0))
+	var cam_max_y: int = int(minf(camera_pos.y + view_half.y + 2.0, float(Config.MAP_HEIGHT - 1)))
 
 	for i in _water_pixels.size():
 		var idx: int = _water_pixels[i]
-		var x: int = idx % _width
-		var y: int = idx / _width
+		var x: int = idx % Config.MAP_WIDTH
+		var y: int = idx / Config.MAP_WIDTH
 		if x < cam_min_x or x > cam_max_x or y < cam_min_y or y > cam_max_y:
 			continue
-		var base: Color = _water_base_colors[i]
-		# Sin-wave ripple
-		var ripple: float = sin(_water_time * 2.0 + float(x) * 0.3 + float(y) * 0.2) * 0.06
-		var color := Color(base.r + ripple, base.g + ripple, base.b + ripple * 1.5)
-		# Sparkle
-		var sparkle_hash: int = (x * 131 + y * 97 + int(_water_time * 3.0)) % 1000
-		if sparkle_hash < 3:
-			color = Color(0.9, 0.95, 1.0, 0.8)
-		_terrain_image.set_pixel(x, y, color)
 
-	_display_texture.update(_terrain_image)
+		var base: Color = _water_base_colors[i]
+		var shore_dist: float = _water_shore_dist[i]
+
+		# Shore-directed wave: strongest near shore, fading with distance
+		var strength: float = clampf(1.0 - shore_dist / 15.0, 0.0, 1.0)
+		var phase: float = _water_time * 1.5 + shore_dist * 0.4
+		var wave: float = sin(phase) * 0.04 * strength
+
+		var c := Color(base.r + wave, base.g + wave * 0.5, base.b + wave * 1.5, 1.0)
+
+		# Foam near shore (dist < 3): subtle white pixels
+		if shore_dist < 3.0 and sin(phase * 2.0) > 0.7:
+			var foam_blend: float = (3.0 - shore_dist) / 3.0 * 0.3
+			c = c.lerp(Color.WHITE, foam_blend)
+
+		_water_image.set_pixel(x, y, c)
+
+	_water_texture.update(_water_image)

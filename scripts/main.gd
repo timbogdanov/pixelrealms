@@ -56,6 +56,8 @@ var _weather_particles: Array = []
 var _water_timer: float = 0.0
 var _ambient_sprite: Sprite2D
 var _ambient_material: ShaderMaterial
+var _hit_flash_timers: Dictionary = {}  # player_id -> float
+var _minimap_tex: ImageTexture = null
 
 # ---------------------------------------------------------------------------
 # Mob tracking (client)
@@ -154,6 +156,7 @@ func _start_game_client(seed_val: int, my_index: int) -> void:
 		add_child(player)
 	_human = _players[my_index]
 	_camera.target = _human
+	_generate_minimap_texture()
 
 
 func _add_wasd_input() -> void:
@@ -195,28 +198,10 @@ func _setup_fog_layer() -> void:
 		+ "uniform vec2 player_pos;\n" \
 		+ "uniform float vision_radius;\n" \
 		+ "uniform vec2 map_size;\n" \
-		+ "uniform float time;\n" \
-		+ "float hash(vec2 p) {\n" \
-		+ "    return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);\n" \
-		+ "}\n" \
-		+ "float noise(vec2 p) {\n" \
-		+ "    vec2 i = floor(p);\n" \
-		+ "    vec2 f = fract(p);\n" \
-		+ "    f = f * f * (3.0 - 2.0 * f);\n" \
-		+ "    float a = hash(i);\n" \
-		+ "    float b = hash(i + vec2(1.0, 0.0));\n" \
-		+ "    float c = hash(i + vec2(0.0, 1.0));\n" \
-		+ "    float d = hash(i + vec2(1.0, 1.0));\n" \
-		+ "    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);\n" \
-		+ "}\n" \
 		+ "void fragment() {\n" \
 		+ "    vec2 world_pos = UV * map_size;\n" \
 		+ "    float dist = distance(world_pos, player_pos);\n" \
-		+ "    float n = noise(world_pos * 0.15 + vec2(time * 0.3, time * 0.2)) * 6.0;\n" \
-		+ "    float edge = vision_radius + n;\n" \
-		+ "    float fog = smoothstep(edge - 4.0, edge + 4.0, dist);\n" \
-		+ "    float cloud = noise(world_pos * 0.08 + vec2(time * 0.1)) * 0.1;\n" \
-		+ "    fog = clamp(fog + cloud * fog, 0.0, 1.0);\n" \
+		+ "    float fog = smoothstep(vision_radius - 8.0, vision_radius + 8.0, dist);\n" \
 		+ "    COLOR = vec4(0.0, 0.0, 0.0, fog * 0.85);\n" \
 		+ "}\n"
 
@@ -225,7 +210,6 @@ func _setup_fog_layer() -> void:
 	_fog_material.set_shader_parameter("map_size", Vector2(float(Config.MAP_WIDTH), float(Config.MAP_HEIGHT)))
 	_fog_material.set_shader_parameter("player_pos", Vector2(0.0, 0.0))
 	_fog_material.set_shader_parameter("vision_radius", 0.0)
-	_fog_material.set_shader_parameter("time", 0.0)
 	_fog_sprite.material = _fog_material
 
 	add_child(_fog_sprite)
@@ -301,6 +285,7 @@ func _process(delta: float) -> void:
 	_tick_particles(delta)
 	_process_bounty_pulse_timers(delta)
 	_tick_weather(delta)
+	_tick_hit_flashes(delta)
 
 	# Water animation (10 FPS)
 	_water_timer += delta
@@ -311,12 +296,27 @@ func _process(delta: float) -> void:
 			var view_half := vp_size / (_camera.zoom * 2.0)
 			_map_gen.update_water(0.1, _camera.position, view_half)
 
-	# Ambient lighting cycle
+	# Dramatic day/night cycle (~125 second full cycle)
 	if _ambient_material != null:
-		var cycle: float = sin(_game_time * 0.02) * 0.5 + 0.5
-		var warm := Color(0.15, 0.1, 0.0, 0.06)
-		var cool := Color(0.0, 0.02, 0.08, 0.06)
-		var tint: Color = warm.lerp(cool, cycle)
+		var cycle: float = fmod(_game_time * 0.05, TAU)
+		var phase: float = cycle / TAU  # 0.0 to 1.0
+		var tint: Color
+		if phase < 0.25:
+			# Dawn: golden orange
+			var t: float = phase / 0.25
+			tint = Color(0.0, 0.02, 0.12, 0.25).lerp(Color(0.4, 0.25, 0.05, 0.15), t)
+		elif phase < 0.5:
+			# Day: clear (no tint)
+			var t: float = (phase - 0.25) / 0.25
+			tint = Color(0.4, 0.25, 0.05, 0.15).lerp(Color(0.0, 0.0, 0.0, 0.0), t)
+		elif phase < 0.75:
+			# Dusk: warm orange
+			var t: float = (phase - 0.5) / 0.25
+			tint = Color(0.0, 0.0, 0.0, 0.0).lerp(Color(0.35, 0.15, 0.05, 0.12), t)
+		else:
+			# Night: dark blue
+			var t: float = (phase - 0.75) / 0.25
+			tint = Color(0.35, 0.15, 0.05, 0.12).lerp(Color(0.0, 0.02, 0.12, 0.25), t)
 		_ambient_material.set_shader_parameter("tint_color", tint)
 
 	if _shop_flash_timer > 0.0:
@@ -529,6 +529,20 @@ func _draw_hill_zone() -> void:
 	_draw_circle_outline(_hill.position.x, _hill.position.y,
 						Config.HILL_RADIUS, ring_color)
 
+	# Flag/banner at hill center
+	var flag_key: Variant = "neutral"
+	if _hill.holding_player >= 0:
+		flag_key = _hill.holding_player
+	elif _hill.capturing_player >= 0:
+		flag_key = _hill.capturing_player
+	var flag: ImageTexture = SpriteFactory.flag_tex.get(flag_key)
+	if flag == null:
+		flag = SpriteFactory.flag_tex.get("neutral")
+	if flag != null:
+		var flag_x: float = _hill.position.x - 3.5 + sin(_game_time * 3.0) * 0.5
+		var flag_y: float = _hill.position.y - 5.0
+		_entity_node.draw_texture_rect(flag, Rect2(flag_x, flag_y, 7.0, 10.0), false)
+
 
 func _draw_shop(shop: Shop) -> void:
 	var cx: float = shop.position.x
@@ -563,7 +577,7 @@ func _draw_mob(mob: Mob) -> void:
 	var cx: float = mob.position.x
 	var cy: float = mob.position.y
 	var ms: Vector2 = SpriteFactory.get_mob_size(mob.mob_type)
-	var frame: int = int(_game_time * 2.0) % 2
+	var frame: int = 0
 	var tex: ImageTexture = SpriteFactory.get_mob(mob.mob_type, frame)
 	if tex != null:
 		_entity_node.draw_texture_rect(tex,
@@ -572,7 +586,7 @@ func _draw_mob(mob: Mob) -> void:
 		_entity_node.draw_rect(Rect2(cx - 1.0, cy - 1.0, 3.0, 3.0), Color(0.8, 0.3, 0.3))
 
 	# Styled HP bar
-	_draw_entity_hp_bar(cx, cy - ms.y * 0.5 - 3.0, 7.0, mob.hp, mob.max_hp)
+	_draw_entity_hp_bar(cx, cy - ms.y * 0.5 - 3.0, 5.0, mob.hp, mob.max_hp)
 
 
 func _draw_player(player: Player) -> void:
@@ -582,9 +596,12 @@ func _draw_player(player: Player) -> void:
 		return
 
 	if not player.alive:
-		var alpha: float = 0.2 + sin(_game_time * 5.0) * 0.1
-		var ghost := Color(player.player_color.r, player.player_color.g, player.player_color.b, alpha)
-		_entity_node.draw_rect(Rect2(cx - 2.0, cy - 2.0, 4.0, 4.0), ghost)
+		# Skull death popup — floats up and fades
+		if SpriteFactory.skull_tex != null:
+			var alpha: float = clampf(player.respawn_timer / Config.PLAYER_RESPAWN_TIME, 0.0, 1.0)
+			var skull_y: float = cy - (1.0 - alpha) * 8.0
+			_entity_node.draw_texture_rect(SpriteFactory.skull_tex,
+				Rect2(cx - 2.5, skull_y - 2.5, 5.0, 5.0), false, Color(1.0, 1.0, 1.0, alpha))
 		return
 
 	# Pick animation frame: 0=idle, 1=walk_0, 2=walk_1, 3=attack
@@ -627,7 +644,16 @@ func _draw_player(player: Player) -> void:
 		_entity_node.draw_rect(Rect2(cx - 1.0, cy - 1.0, 2.0, 2.0), arm_color)
 
 	# Styled HP bar
-	_draw_entity_hp_bar(cx, cy - 6.0, 9.0, player.hp, player.max_hp)
+	_draw_entity_hp_bar(cx, cy - 6.0, 7.0, player.hp, player.max_hp)
+
+	# Player name label
+	var label: String = "You" if player == _human else "P%d" % (player.player_id + 1)
+	var label_col: Color = player.player_color.lightened(0.3)
+	_draw_text_shadowed(_entity_node, Vector2(cx - 4.0, cy - 10.0), label, 7, label_col)
+
+	# Hit flash overlay
+	if _hit_flash_timers.has(player.player_id) and _hit_flash_timers[player.player_id] > 0.0:
+		_entity_node.draw_rect(Rect2(cx - 4.0, cy - 4.0, 8.0, 8.0), Color(1.0, 1.0, 1.0, 0.4))
 
 	# Bounty ring (pulsing red/gold)
 	if player.has_bounty:
@@ -643,7 +669,7 @@ func _draw_player(player: Player) -> void:
 		for step in 7:
 			var a: float = base_angle - arc_half + arc_half * 2.0 * float(step) / 6.0
 			var tip_pos: Vector2 = player.position + Vector2(cos(a), sin(a)) * swing_len
-			var trail_alpha: float = 0.8 - absf(float(step) - 3.0) * 0.15
+			var trail_alpha: float = 1.0 - absf(float(step) - 3.0) * 0.12
 			_entity_node.draw_rect(Rect2(tip_pos.x, tip_pos.y, 1.0, 1.0), Color(1.0, 1.0, 1.0, trail_alpha))
 
 
@@ -764,7 +790,6 @@ func _draw_particles() -> void:
 func _render_fog() -> void:
 	if _human == null or _fog_material == null:
 		return
-	_fog_material.set_shader_parameter("time", _game_time)
 	if _human.alive:
 		var radius: float = Config.PLAYER_VISION + _human.get_vision_bonus()
 		_fog_material.set_shader_parameter("player_pos", _human.position)
@@ -793,10 +818,8 @@ func _draw_hud() -> void:
 	# --- Bottom-center: Inventory Bar + HP bar ---
 	_draw_inventory_bar(vp)
 
-	# --- Top bar background (gradient) ---
-	_hud_node.draw_rect(Rect2(0, 0, vp.x, 20), Color(0.06, 0.06, 0.04, 0.80))
-	_hud_node.draw_rect(Rect2(0, 20, vp.x, 20), Color(0.03, 0.03, 0.02, 0.75))
-	_hud_node.draw_rect(Rect2(0, 40, vp.x, 1), Color(0.35, 0.30, 0.20, 0.5))
+	# --- Top bar background (stone frame) ---
+	_draw_hud_panel(0, 0, vp.x, 40)
 
 	# --- Top-center: Hill + Gold ---
 	var hill_cx: float = vp.x * 0.5
@@ -864,6 +887,9 @@ func _draw_hud() -> void:
 	_hud_node.draw_string(ThemeDB.fallback_font, Vector2(vp.x - 75.0, 32.0),
 		"%d Players" % _lobby_player_count, HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color(0.6, 0.58, 0.48))
 
+	# --- Minimap (bottom-right) ---
+	_draw_minimap(vp)
+
 	# --- Death overlay ---
 	if not _human.alive:
 		var respawn_text: String = "Respawning in %.1f..." % _human.respawn_timer
@@ -912,9 +938,8 @@ func _draw_shop_panel(vp: Vector2) -> void:
 	var px: float = vp.x * 0.5 - panel_w * 0.5
 	var py: float = vp.y * 0.5 - panel_h * 0.5
 
-	# Background
-	_hud_node.draw_rect(Rect2(px, py, panel_w, panel_h), Color(0.08, 0.08, 0.06, 0.92))
-	_hud_node.draw_rect(Rect2(px, py, panel_w, panel_h), Config.UI_BORDER, false, 1.5)
+	# Background (stone frame)
+	_draw_hud_panel(px, py, panel_w, panel_h)
 
 	# Header bar
 	_hud_node.draw_rect(Rect2(px + 1, py + 1, panel_w - 2, 16), Color(0.12, 0.11, 0.08, 0.9))
@@ -1369,19 +1394,12 @@ func _draw_inventory_bar(vp: Vector2) -> void:
 		var sx: float = bar_x + float(i) * (slot_size + gap)
 		var sy: float = bar_y
 
-		# Background
-		var bg_color := Color(0.08, 0.08, 0.06, 0.85)
-		_hud_node.draw_rect(Rect2(sx, sy, slot_size, slot_size), bg_color)
+		# Background (stone frame)
+		_draw_hud_panel(sx, sy, slot_size, slot_size)
 
-		# Border
-		var border_color: Color
+		# Active highlight border
 		if slot["active"]:
-			border_color = Config.UI_TEXT_GOLD
-		elif slot["has"]:
-			border_color = Color(0.4, 0.38, 0.28, 0.9)
-		else:
-			border_color = Color(0.25, 0.24, 0.2, 0.6)
-		_hud_node.draw_rect(Rect2(sx, sy, slot_size, slot_size), border_color, false, 1.5)
+			_hud_node.draw_rect(Rect2(sx, sy, slot_size, slot_size), Config.UI_TEXT_GOLD, false, 2.0)
 
 		# Icon square (centered, 14x14)
 		var icon_size: float = 14.0
@@ -2020,6 +2038,8 @@ func _on_returned_to_lobby() -> void:
 	_client_pickups.clear()
 	_bounty_pulses.clear()
 	_water_timer = 0.0
+	_hit_flash_timers.clear()
+	_minimap_tex = null
 	if _fog_sprite != null:
 		_fog_sprite.queue_free()
 		_fog_sprite = null
@@ -2295,6 +2315,7 @@ func _handle_game_event(event_data: PackedByteArray) -> void:
 			_spawn_particles(pos, 4, Color(1.0, 1.0, 0.9), 30.0, 0.25)
 			_spawn_particles(pos, 3, Color(1.0, 0.6, 0.2), 20.0, 0.3)
 			var victim_id: int = event.get("victim_id", -1)
+			_hit_flash_timers[victim_id] = 0.1
 			if victim_id == Net.my_player_index and _camera != null:
 				_camera.apply_shake(1.5)
 		"rare_drop":
@@ -2342,10 +2363,10 @@ func _is_on_screen(pos: Vector2) -> bool:
 
 func _draw_entity_hp_bar(cx: float, top_y: float, width: float, hp: float, max_hp: float) -> void:
 	var half_w: float = width * 0.5
-	var bar_h: float = 2.0
+	var bar_h: float = 1.5
 	var hp_frac: float = hp / max_hp if max_hp > 0.0 else 0.0
 	# Border
-	_entity_node.draw_rect(Rect2(cx - half_w - 1.0, top_y - 1.0, width + 2.0, bar_h + 2.0), Color(0.1, 0.08, 0.06))
+	_entity_node.draw_rect(Rect2(cx - half_w - 0.5, top_y - 0.5, width + 1.0, bar_h + 1.0), Color(0.1, 0.08, 0.06))
 	# Background
 	_entity_node.draw_rect(Rect2(cx - half_w, top_y, width, bar_h), Color(0.3, 0.08, 0.08))
 	# Fill with gradient color
@@ -2358,8 +2379,6 @@ func _draw_entity_hp_bar(cx: float, top_y: float, width: float, hp: float, max_h
 		else:
 			fill_color = Color(0.9, 0.15, 0.1)
 		_entity_node.draw_rect(Rect2(cx - half_w, top_y, width * hp_frac, bar_h), fill_color)
-		# Highlight on top half
-		_entity_node.draw_rect(Rect2(cx - half_w, top_y, width * hp_frac, 1.0), fill_color.lightened(0.2))
 
 
 # ===========================================================================
@@ -2455,9 +2474,18 @@ func _setup_ambient_layer() -> void:
 # ===========================================================================
 
 func _draw_hud_panel(x: float, y: float, w: float, h: float) -> void:
-	_hud_node.draw_rect(Rect2(x, y, w, h * 0.5), Color(0.10, 0.11, 0.08, 0.88))
-	_hud_node.draw_rect(Rect2(x, y + h * 0.5, w, h * 0.5), Color(0.06, 0.07, 0.04, 0.92))
-	_hud_node.draw_rect(Rect2(x, y, w, h), Config.UI_BORDER, false, 1.0)
+	# Stone fill
+	_hud_node.draw_rect(Rect2(x, y, w, h), Color(0.18, 0.18, 0.16, 0.92))
+	# Outer border (dark stone)
+	_hud_node.draw_rect(Rect2(x, y, w, h), Color(0.35, 0.33, 0.28), false, 2.0)
+	# Inner border (lighter stone)
+	_hud_node.draw_rect(Rect2(x + 2.0, y + 2.0, w - 4.0, h - 4.0), Color(0.50, 0.48, 0.40), false, 1.0)
+	# Corner accents (2x2 lighter stone at each corner)
+	var corner := Color(0.55, 0.52, 0.42)
+	_hud_node.draw_rect(Rect2(x, y, 2.0, 2.0), corner)
+	_hud_node.draw_rect(Rect2(x + w - 2.0, y, 2.0, 2.0), corner)
+	_hud_node.draw_rect(Rect2(x, y + h - 2.0, 2.0, 2.0), corner)
+	_hud_node.draw_rect(Rect2(x + w - 2.0, y + h - 2.0, 2.0, 2.0), corner)
 
 
 func _draw_text_shadowed(node: CanvasItem, pos: Vector2, text: String, size: int, color: Color) -> void:
@@ -2465,3 +2493,86 @@ func _draw_text_shadowed(node: CanvasItem, pos: Vector2, text: String, size: int
 		text, HORIZONTAL_ALIGNMENT_LEFT, -1, size, Color(0, 0, 0, 0.5))
 	node.draw_string(ThemeDB.fallback_font, pos,
 		text, HORIZONTAL_ALIGNMENT_LEFT, -1, size, color)
+
+
+# ===========================================================================
+# Hit flash timer
+# ===========================================================================
+
+func _tick_hit_flashes(delta: float) -> void:
+	var to_remove: Array = []
+	for pid: Variant in _hit_flash_timers:
+		_hit_flash_timers[pid] -= delta
+		if _hit_flash_timers[pid] <= 0.0:
+			to_remove.append(pid)
+	for pid: Variant in to_remove:
+		_hit_flash_timers.erase(pid)
+
+
+# ===========================================================================
+# Minimap
+# ===========================================================================
+
+func _generate_minimap_texture() -> void:
+	if _map_gen == null or _map_gen._terrain_image == null:
+		return
+	var src: Image = _map_gen._terrain_image
+	var mw: int = 100
+	var mh: int = 75
+	var mini_img := Image.create(mw, mh, false, Image.FORMAT_RGBA8)
+	var sx: float = float(Config.MAP_WIDTH) / float(mw)
+	var sy: float = float(Config.MAP_HEIGHT) / float(mh)
+	for y in mh:
+		for x in mw:
+			var sample_x: int = int(float(x) * sx)
+			var sample_y: int = int(float(y) * sy)
+			sample_x = mini(sample_x, Config.MAP_WIDTH - 1)
+			sample_y = mini(sample_y, Config.MAP_HEIGHT - 1)
+			mini_img.set_pixel(x, y, src.get_pixel(sample_x, sample_y))
+	_minimap_tex = ImageTexture.create_from_image(mini_img)
+
+
+func _draw_minimap(vp: Vector2) -> void:
+	if _minimap_tex == null or _human == null:
+		return
+	var mw: float = 100.0
+	var mh: float = 75.0
+	var margin: float = 8.0
+	var mx: float = vp.x - mw - margin
+	var my: float = vp.y - mh - margin - 60.0  # above inventory bar
+
+	# Frame
+	_draw_hud_panel(mx - 2.0, my - 2.0, mw + 4.0, mh + 4.0)
+	# Terrain texture
+	_hud_node.draw_texture_rect(_minimap_tex, Rect2(mx, my, mw, mh), false)
+
+	var scale_x: float = mw / float(Config.MAP_WIDTH)
+	var scale_y: float = mh / float(Config.MAP_HEIGHT)
+
+	# Hill marker (gold pulsing)
+	var hill_px: float = mx + _hill.position.x * scale_x
+	var hill_py: float = my + _hill.position.y * scale_y
+	var hill_alpha: float = 0.7 + sin(_game_time * 4.0) * 0.3
+	_hud_node.draw_rect(Rect2(hill_px - 1.5, hill_py - 1.5, 3.0, 3.0), Color(1.0, 0.85, 0.3, hill_alpha))
+
+	# Shop markers (yellow)
+	for shop in _shops:
+		var spx: float = mx + shop.position.x * scale_x
+		var spy: float = my + shop.position.y * scale_y
+		_hud_node.draw_rect(Rect2(spx - 1.0, spy - 1.0, 2.0, 2.0), Color(1.0, 0.9, 0.3, 0.8))
+
+	# Other players in vision (their color)
+	for player in _players:
+		if player == _human or not player.alive:
+			continue
+		if _human.position.distance_to(player.position) > Config.PLAYER_VISION + _human.get_vision_bonus():
+			continue
+		var ppx: float = mx + player.position.x * scale_x
+		var ppy: float = my + player.position.y * scale_y
+		_hud_node.draw_rect(Rect2(ppx - 1.0, ppy - 1.0, 2.0, 2.0), player.player_color)
+
+	# Human player (white blinking)
+	var blink: float = 0.6 + sin(_game_time * 6.0) * 0.4
+	var hpx: float = mx + _human.position.x * scale_x
+	var hpy: float = my + _human.position.y * scale_y
+	_hud_node.draw_rect(Rect2(hpx - 1.5, hpy - 1.5, 3.0, 3.0), Color(1.0, 1.0, 1.0, blink))
