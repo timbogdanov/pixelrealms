@@ -7,6 +7,7 @@ extends Node2D
 enum Biome { PLAINS, FOREST_BIOME, DESERT, SNOW_BIOME }
 
 var terrain: PackedByteArray
+var headless: bool = false
 var _width: int
 var _height: int
 var _terrain_image: Image
@@ -39,6 +40,9 @@ func _ready() -> void:
 	var total: int = _width * _height
 	terrain.resize(total)
 	terrain.fill(0)
+
+	if headless:
+		return
 
 	_terrain_image = Image.create(_width, _height, false, Image.FORMAT_RGB8)
 	_display_texture = ImageTexture.create_from_image(_terrain_image)
@@ -121,10 +125,11 @@ func generate(seed_val: int = 42, _map_index: int = 0) -> void:
 			var dist_to_edge: int = mini(mini(x, _width - 1 - x), mini(y, _height - 1 - y))
 			if dist_to_edge < 30:
 				terrain[idx] = Config.Terrain.WATER
-				var depth: float = float(30 - dist_to_edge) / 30.0 * 0.3
-				var color: Color = Config.TERRAIN_COLORS[Config.Terrain.WATER]
-				color = color.darkened(depth)
-				_terrain_image.set_pixel(x, y, color)
+				if not headless:
+					var depth: float = float(30 - dist_to_edge) / 30.0 * 0.3
+					var color: Color = Config.TERRAIN_COLORS[Config.Terrain.WATER]
+					color = color.darkened(depth)
+					_terrain_image.set_pixel(x, y, color)
 				continue
 
 			# Island shape: continent noise + squared distance falloff
@@ -137,17 +142,19 @@ func generate(seed_val: int = 42, _map_index: int = 0) -> void:
 			if land_value <= 0.0:
 				# Ocean
 				terrain[idx] = Config.Terrain.WATER
-				var depth: float = continent_noise.get_noise_2d(fx * 0.5, fy * 0.5) * 0.15
-				var color: Color = Config.TERRAIN_COLORS[Config.Terrain.WATER]
-				color = color.darkened(clampf(depth, 0.0, 0.3))
-				_terrain_image.set_pixel(x, y, color)
+				if not headless:
+					var depth: float = continent_noise.get_noise_2d(fx * 0.5, fy * 0.5) * 0.15
+					var color: Color = Config.TERRAIN_COLORS[Config.Terrain.WATER]
+					color = color.darkened(clampf(depth, 0.0, 0.3))
+					_terrain_image.set_pixel(x, y, color)
 				continue
 
 			if land_value <= 0.04:
 				# Shallow water near coastline
 				terrain[idx] = Config.Terrain.SHALLOW_WATER
-				var color: Color = Config.TERRAIN_COLORS[Config.Terrain.SHALLOW_WATER]
-				_terrain_image.set_pixel(x, y, color)
+				if not headless:
+					var color: Color = Config.TERRAIN_COLORS[Config.Terrain.SHALLOW_WATER]
+					_terrain_image.set_pixel(x, y, color)
 				continue
 
 			# --- Land pixel: compute elevation and biome ---
@@ -162,7 +169,6 @@ func generate(seed_val: int = 42, _map_index: int = 0) -> void:
 			var temp: float = temperature_noise.get_noise_2d(fx, fy)
 			var moist: float = moisture_noise.get_noise_2d(fx, fy)
 			var detail: float = detail_noise.get_noise_2d(fx, fy)
-			var variation: float = color_noise.get_noise_2d(fx * 3.0, fy * 3.0) * 0.04
 
 			var biome: int
 			if temp < -0.15:
@@ -203,7 +209,12 @@ func generate(seed_val: int = 42, _map_index: int = 0) -> void:
 						t = Config.Terrain.GRASS
 
 			terrain[idx] = t
+
+			if headless:
+				continue
+
 			var color: Color = Config.TERRAIN_COLORS[t]
+			var variation: float = color_noise.get_noise_2d(fx * 3.0, fy * 3.0) * 0.04
 
 			# Elevation shading: higher = lighter
 			var shade: float = 0.85 + elevation * 0.3
@@ -281,16 +292,121 @@ func generate(seed_val: int = 42, _map_index: int = 0) -> void:
 	# --- Pass 8: Place mob zones ---
 	_place_mob_spawn_zones(rng)
 
-	# --- Pass 9: Post-processing ---
-	_apply_coastline_detail()
-	_apply_dithered_transitions()
-	_apply_mountain_glow()
+	if not headless:
+		# --- Pass 9: Post-processing ---
+		_apply_coastline_detail()
+		_apply_dithered_transitions()
+		_apply_mountain_glow()
 
-	# --- Pass 10: Collect water pixels for animation ---
-	_collect_water_pixels()
+		# --- Pass 10: Collect water pixels for animation ---
+		_collect_water_pixels()
 
-	# --- Finalize texture ---
-	_display_texture.update(_terrain_image)
+		# --- Finalize texture ---
+		_display_texture.update(_terrain_image)
+
+
+# ---------------------------------------------------------------------------
+# Fast preview generation (200x200 thumbnail for lobby)
+# ---------------------------------------------------------------------------
+
+func generate_preview(seed_val: int, pw: int = 200, ph: int = 200) -> ImageTexture:
+	var rng := RandomNumberGenerator.new()
+	rng.seed = seed_val
+
+	# Same noise layers as generate() — must consume rng.randi() in same order
+	var continent_noise := FastNoiseLite.new()
+	continent_noise.seed = rng.randi()
+	continent_noise.noise_type = FastNoiseLite.TYPE_SIMPLEX
+	continent_noise.frequency = 0.002
+	continent_noise.fractal_octaves = 4
+
+	var elevation_noise := FastNoiseLite.new()
+	elevation_noise.seed = rng.randi()
+	elevation_noise.noise_type = FastNoiseLite.TYPE_SIMPLEX
+	elevation_noise.frequency = 0.005
+	elevation_noise.fractal_octaves = 4
+
+	var temperature_noise := FastNoiseLite.new()
+	temperature_noise.seed = rng.randi()
+	temperature_noise.noise_type = FastNoiseLite.TYPE_SIMPLEX
+	temperature_noise.frequency = 0.0015
+	temperature_noise.fractal_octaves = 3
+
+	var moisture_noise := FastNoiseLite.new()
+	moisture_noise.seed = rng.randi()
+	moisture_noise.noise_type = FastNoiseLite.TYPE_SIMPLEX
+	moisture_noise.frequency = 0.002
+	moisture_noise.fractal_octaves = 3
+
+	# Consume remaining noise seeds to keep rng sequence aligned
+	rng.randi()  # detail_noise
+	rng.randi()  # color_noise
+
+	var scale_x: float = float(Config.MAP_WIDTH) / float(pw)
+	var scale_y: float = float(Config.MAP_HEIGHT) / float(ph)
+	var center_x: float = float(Config.MAP_WIDTH) / 2.0
+	var center_y: float = float(Config.MAP_HEIGHT) / 2.0
+	var max_radius: float = minf(center_x, center_y)
+
+	var img := Image.create(pw, ph, false, Image.FORMAT_RGB8)
+
+	for y in ph:
+		for x in pw:
+			var fx: float = float(x) * scale_x
+			var fy: float = float(y) * scale_y
+
+			# Hard water border
+			var dist_to_edge: float = minf(minf(fx, float(Config.MAP_WIDTH) - fx),
+				minf(fy, float(Config.MAP_HEIGHT) - fy))
+			if dist_to_edge < 30.0:
+				img.set_pixel(x, y, Config.TERRAIN_COLORS[Config.Terrain.WATER])
+				continue
+
+			# Island shape
+			var dx: float = (fx - center_x) / max_radius
+			var dy: float = (fy - center_y) / max_radius
+			var dist_sq: float = dx * dx + dy * dy
+			var continent_val: float = continent_noise.get_noise_2d(fx, fy)
+			var land_value: float = 0.6 - dist_sq * 0.45 + continent_val * 0.35
+
+			if land_value <= 0.0:
+				img.set_pixel(x, y, Config.TERRAIN_COLORS[Config.Terrain.WATER])
+				continue
+
+			if land_value <= 0.04:
+				img.set_pixel(x, y, Config.TERRAIN_COLORS[Config.Terrain.SHALLOW_WATER])
+				continue
+
+			# Biome
+			var elev_val: float = elevation_noise.get_noise_2d(fx, fy)
+			var elevation: float = (elev_val + 1.0) * 0.5
+			var temp: float = temperature_noise.get_noise_2d(fx, fy)
+			var moist: float = moisture_noise.get_noise_2d(fx, fy)
+
+			var t: int
+			if elevation > 0.85:
+				t = Config.Terrain.STONE
+			elif elevation > 0.70:
+				t = Config.Terrain.HILL
+			else:
+				if temp < -0.15:
+					t = Config.Terrain.SNOW
+				elif temp > 0.25 and moist < -0.1:
+					t = Config.Terrain.SAND
+				elif moist > 0.15:
+					t = Config.Terrain.FOREST
+				else:
+					t = Config.Terrain.GRASS
+
+			var color: Color = Config.TERRAIN_COLORS[t]
+			var shade: float = 0.85 + elevation * 0.3
+			color = Color(
+				clampf(color.r * shade, 0.0, 1.0),
+				clampf(color.g * shade, 0.0, 1.0),
+				clampf(color.b * shade, 0.0, 1.0))
+			img.set_pixel(x, y, color)
+
+	return ImageTexture.create_from_image(img)
 
 
 # ---------------------------------------------------------------------------
@@ -350,29 +466,31 @@ func _carve_mountain(color_noise: FastNoiseLite) -> void:
 			if terrain[idx] == Config.Terrain.WATER or terrain[idx] == Config.Terrain.SHALLOW_WATER:
 				continue
 
-			var variation: float = color_noise.get_noise_2d(float(x) * 3.0, float(y) * 3.0) * 0.04
-
 			if dist <= stone_r:
 				terrain[idx] = Config.Terrain.STONE
-				var center_blend: float = 1.0 - (dist / stone_r)
-				var color: Color = Config.TERRAIN_COLORS[Config.Terrain.STONE]
-				color = color.lightened(center_blend * 0.12 + variation)
-				var mshash: int = (x * 97 + y * 61) % 100
-				if mshash < 10:
-					color = color.lightened(0.08)
-				elif mshash < 18:
-					color = color.darkened(0.06)
-				_terrain_image.set_pixel(x, y, color)
+				if not headless:
+					var variation: float = color_noise.get_noise_2d(float(x) * 3.0, float(y) * 3.0) * 0.04
+					var center_blend: float = 1.0 - (dist / stone_r)
+					var color: Color = Config.TERRAIN_COLORS[Config.Terrain.STONE]
+					color = color.lightened(center_blend * 0.12 + variation)
+					var mshash: int = (x * 97 + y * 61) % 100
+					if mshash < 10:
+						color = color.lightened(0.08)
+					elif mshash < 18:
+						color = color.darkened(0.06)
+					_terrain_image.set_pixel(x, y, color)
 			else:
 				terrain[idx] = Config.Terrain.HILL
-				var slope_frac: float = (dist - stone_r) / (total_r - stone_r)
-				var color: Color = HILL_COLOR.lightened((1.0 - slope_frac) * 0.15 + variation)
-				var mhhash: int = (x * 97 + y * 61) % 100
-				if mhhash < 10:
-					color = color.lightened(0.06)
-				elif mhhash < 18:
-					color = color.darkened(0.05)
-				_terrain_image.set_pixel(x, y, color)
+				if not headless:
+					var variation: float = color_noise.get_noise_2d(float(x) * 3.0, float(y) * 3.0) * 0.04
+					var slope_frac: float = (dist - stone_r) / (total_r - stone_r)
+					var color: Color = HILL_COLOR.lightened((1.0 - slope_frac) * 0.15 + variation)
+					var mhhash: int = (x * 97 + y * 61) % 100
+					if mhhash < 10:
+						color = color.lightened(0.06)
+					elif mhhash < 18:
+						color = color.darkened(0.05)
+					_terrain_image.set_pixel(x, y, color)
 
 
 # ---------------------------------------------------------------------------
@@ -436,10 +554,11 @@ func _generate_rivers(rng: RandomNumberGenerator) -> void:
 				if Vector2(fx, fy).distance_to(hill_position) <= Config.MOUNTAIN_TOTAL_RADIUS + 5.0:
 					continue
 				terrain[fidx] = Config.Terrain.SHALLOW_WATER
-				var color: Color = Config.TERRAIN_COLORS[Config.Terrain.SHALLOW_WATER]
-				var river_var: float = sin(float(fx) * 0.3) * 0.03
-				color = color.lightened(river_var)
-				_terrain_image.set_pixel(fx, fy, color)
+				if not headless:
+					var color: Color = Config.TERRAIN_COLORS[Config.Terrain.SHALLOW_WATER]
+					var river_var: float = sin(float(fx) * 0.3) * 0.03
+					color = color.lightened(river_var)
+					_terrain_image.set_pixel(fx, fy, color)
 
 			# Advance with wobble
 			walk_angle += rng.randf_range(-0.25, 0.25)
@@ -549,10 +668,11 @@ func _generate_path(from_pos: Vector2, to_pos: Vector2) -> void:
 					or current_terrain == Config.Terrain.SAND or current_terrain == Config.Terrain.SNOW \
 					or current_terrain == Config.Terrain.SNOW_FOREST or current_terrain == Config.Terrain.SHALLOW_WATER:
 					terrain[fidx] = Config.Terrain.PATH
-					var color: Color = Config.TERRAIN_COLORS[Config.Terrain.PATH]
-					var px_variation: float = sin(float(fx) * 0.5) * 0.03
-					color = color.lightened(px_variation)
-					_terrain_image.set_pixel(fx, fy, color)
+					if not headless:
+						var color: Color = Config.TERRAIN_COLORS[Config.Terrain.PATH]
+						var px_variation: float = sin(float(fx) * 0.5) * 0.03
+						color = color.lightened(px_variation)
+						_terrain_image.set_pixel(fx, fy, color)
 
 
 # ---------------------------------------------------------------------------
@@ -838,6 +958,8 @@ func _collect_water_pixels() -> void:
 # ---------------------------------------------------------------------------
 
 func update_water(delta: float, camera_pos: Vector2, view_half: Vector2) -> void:
+	if headless:
+		return
 	_water_time += delta
 	var cam_min_x: int = int(maxf(camera_pos.x - view_half.x - 2.0, 0.0))
 	var cam_max_x: int = int(minf(camera_pos.x + view_half.x + 2.0, float(_width - 1)))

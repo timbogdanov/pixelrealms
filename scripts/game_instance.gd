@@ -62,8 +62,9 @@ func start(p_seed: int, p_map_index: int, peers: Dictionary, map_gen_scene: Pack
 		var player_idx: int = _game_peers[peer_id]
 		_player_to_peer[player_idx] = peer_id
 
-	# Create own MapGenerator
+	# Create own MapGenerator (headless — server skips all visual processing)
 	_map_gen = map_gen_scene.instantiate()
+	_map_gen.headless = true
 	add_child(_map_gen)
 	_map_gen.generate(seed_val, map_index)
 

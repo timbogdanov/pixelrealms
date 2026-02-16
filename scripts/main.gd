@@ -2049,10 +2049,7 @@ func _on_lobby_updated(player_count: int, timer: float, map_index: int, seed_val
 	_lobby_map_index = map_index
 	if seed_val != 0 and (seed_val != _lobby_seed or _lobby_preview_tex == null):
 		_lobby_seed = seed_val
-		_map_gen.generate(seed_val, map_index)
-		var preview: Image = _map_gen._terrain_image.duplicate()
-		preview.resize(200, 200, Image.INTERPOLATE_BILINEAR)
-		_lobby_preview_tex = ImageTexture.create_from_image(preview)
+		_lobby_preview_tex = _map_gen.generate_preview(seed_val)
 
 
 func _on_returned_to_lobby() -> void:
