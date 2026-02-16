@@ -2281,7 +2281,11 @@ func _predict_human_movement(delta: float) -> void:
 		move_dir.y += 1.0
 	if move_dir.length_squared() > 0.0:
 		move_dir = move_dir.normalized()
-		_human.position += move_dir * Config.PLAYER_SPEED * _human.speed_mult * _human.get_speed_bonus() * delta
+		var terrain_speed: float = 1.0
+		if _map_gen != null:
+			var terrain_type: int = _map_gen.get_terrain(_human.position)
+			terrain_speed = Config.TERRAIN_SPEED.get(terrain_type, 1.0)
+		_human.position += move_dir * Config.PLAYER_SPEED * terrain_speed * _human.get_speed_bonus() * delta
 		_human.position.x = clampf(_human.position.x, 0.0, float(Config.MAP_WIDTH - 1))
 		_human.position.y = clampf(_human.position.y, 0.0, float(Config.MAP_HEIGHT - 1))
 		if not Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT):
@@ -2298,10 +2302,17 @@ func _interpolate_entities(delta: float) -> void:
 	var t: float = minf(delta * 18.0, 1.0)
 	for player in _players:
 		if player == _human:
-			# Human uses prediction — gently correct toward server position
+			# Human uses prediction — only correct toward server when idle or wildly desynced
 			if _player_targets.has(player.player_id):
 				var server_pos: Vector2 = _player_targets[player.player_id]
-				player.position = player.position.lerp(server_pos, minf(delta * 8.0, 1.0))
+				var dist: float = player.position.distance_to(server_pos)
+				var is_moving: bool = Input.is_action_pressed("ui_left") or Input.is_action_pressed("ui_right") \
+					or Input.is_action_pressed("ui_up") or Input.is_action_pressed("ui_down")
+				if is_moving:
+					if dist > 15.0:
+						player.position = player.position.lerp(server_pos, minf(delta * 5.0, 1.0))
+				else:
+					player.position = player.position.lerp(server_pos, minf(delta * 5.0, 1.0))
 		else:
 			if _player_targets.has(player.player_id):
 				player.position = player.position.lerp(_player_targets[player.player_id], t)
